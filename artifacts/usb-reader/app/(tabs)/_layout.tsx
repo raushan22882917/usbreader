@@ -5,13 +5,15 @@ import React from "react";
 import { Platform, StyleSheet, View } from "react-native";
 
 const C = {
-  bg:      "rgba(18,22,24,1)",
-  active:  "#6EDCA1",
+  bg:       "#16181a",
+  active:   "#4ade80",
   inactive: "rgba(120,122,122,1)",
-  border:  "rgba(51,56,58,1)",
+  border:   "#2b2d30",
 };
 
 export default function TabLayout() {
+  const hiddenTabBar = { display: "none" as const };
+
   return (
     <Tabs
       screenOptions={{
@@ -19,7 +21,6 @@ export default function TabLayout() {
         tabBarInactiveTintColor: C.inactive,
         headerShown: false,
         tabBarStyle: {
-          position: "absolute",
           backgroundColor: C.bg,
           borderTopWidth: 1,
           borderTopColor: C.border,
@@ -40,10 +41,12 @@ export default function TabLayout() {
           ),
       }}
     >
+      {/* Dashboard uses its own bottom tab bar */}
       <Tabs.Screen
         name="index"
         options={{
           title: "Dashboard",
+          tabBarStyle: hiddenTabBar,
           tabBarIcon: ({ color, size }) => <Feather name="home" size={size - 2} color={color} />,
         }}
       />

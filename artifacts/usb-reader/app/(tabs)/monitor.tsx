@@ -1,253 +1,238 @@
-import React, { useState } from "react";
-import {
-  FlatList,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Feather } from "@expo/vector-icons";
+import React, { useRef, useState } from "react";
+import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { router } from "expo-router";
 import { useUsb, DataPacket } from "@/context/UsbContext";
-import { GlobalStatusBar } from "@/components/StatusBar";
 
 const C = {
-  bg: "rgba(21,25,27,1)",
-  card: "rgba(28,32,34,1)",
+  bg:     "rgba(21,25,27,1)",
+  panel:  "rgba(26,30,32,1)",
+  card:   "rgba(32,36,38,1)",
   border: "rgba(51,56,58,1)",
-  text: "rgba(220,221,221,1)",
-  muted: "rgba(120,122,122,1)",
-  mid: "rgba(160,162,162,1)",
-  green: "#6EDCA1",
+  text:   "rgba(220,221,221,1)",
+  muted:  "rgba(120,122,122,1)",
+  dim:    "rgba(60,62,62,1)",
+  green:  "#6EDCA1",
   yellow: "#FFC832",
-  red: "#FF503C",
-  blue: "#50B4FF",
-  terminal: "#020810",
+  red:    "#FF503C",
+  blue:   "#50B4FF",
+  term:   "#020810",
 };
 
-function toAscii(hex: string): string {
-  return hex
-    .split(" ")
-    .filter(Boolean)
-    .map((h) => {
-      const code = parseInt(h, 16);
-      return code >= 32 && code < 127 ? String.fromCharCode(code) : ".";
-    })
-    .join("");
-}
+type ViewMode = "TEXT" | "HEX" | "ASCII";
 
-function formatTs(d: Date): string {
-  return d.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
+// ── Packet row ────────────────────────────────────────────────
+function PacketRow({ pkt, isSelected, onPress }: { pkt: DataPacket; isSelected: boolean; onPress: () => void }) {
+  const isRx = pkt.direction === "read";
+  const color = isRx ? C.blue : C.green;
+  const icon = isRx ? "arrow-down-circle" : "arrow-up-circle";
 
-function HexDump({ hexStr }: { hexStr: string }) {
-  const bytes = hexStr.split(" ").filter(Boolean);
-  const rows: string[][] = [];
-  for (let i = 0; i < bytes.length; i += 16) rows.push(bytes.slice(i, i + 16));
   return (
-    <View style={{ gap: 1 }}>
-      {rows.map((row, ri) => (
-        <View key={ri} style={hd.row}>
-          <Text style={hd.offset}>{(ri * 16).toString(16).padStart(4, "0")}</Text>
-          <Text style={hd.sep}>│</Text>
-          <View style={hd.bytesWrap}>
-            {Array.from({ length: 16 }).map((_, bi) => {
-              const b = row[bi];
-              const isNull = !b || b === "00";
-              return (
-                <Text key={bi} style={[hd.byte, { color: isNull ? "rgba(51,56,58,1)" : C.blue }]}>
-                  {b ?? "  "}
-                </Text>
-              );
-            })}
-          </View>
-          <Text style={hd.sep}>│</Text>
-          <Text style={hd.ascii} numberOfLines={1}>{toAscii(row.join(" "))}</Text>
-        </View>
-      ))}
-    </View>
+    <Pressable
+      style={[pr.row, { borderLeftColor: color, backgroundColor: isSelected ? `${color}15` : "transparent" }]}
+      onPress={() => { Haptics.selectionAsync(); onPress(); }}
+    >
+      <MaterialCommunityIcons name={icon} size={13} color={color} />
+      <Text style={[pr.dir, { color }]}>{isRx ? "RX" : "TX"}</Text>
+      <Text style={pr.time}>{pkt.timestamp.toLocaleTimeString([], { hour12: false })}</Text>
+      <Text style={pr.data} numberOfLines={1}>{pkt.data}</Text>
+      <Text style={pr.bytes}>{pkt.byteLength}B</Text>
+    </Pressable>
   );
 }
-
-const hd = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center" },
-  offset: { color: "rgba(100,102,102,1)", fontSize: 10, fontFamily: "Inter_400Regular", width: 34, marginRight: 4 },
-  sep: { color: "rgba(51,56,58,1)", fontSize: 10, fontFamily: "Inter_400Regular", marginHorizontal: 4 },
-  bytesWrap: { flexDirection: "row", gap: 3, width: 208 },
-  byte: { fontSize: 10, fontFamily: "Inter_400Regular", width: 13 },
-  ascii: { color: C.green, fontSize: 10, fontFamily: "Inter_400Regular", flex: 1 },
+const pr = StyleSheet.create({
+  row: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderLeftWidth: 2 },
+  dir: { fontSize: 9, fontWeight: "700", width: 18 },
+  time: { color: C.muted, fontSize: 9, width: 60 },
+  data: { flex: 1, color: C.text, fontSize: 10 },
+  bytes: { color: C.muted, fontSize: 9 },
 });
 
+// ── Hex dump viewer ───────────────────────────────────────────
+function HexViewer({ pkt, mode }: { pkt: DataPacket | null; mode: ViewMode }) {
+  if (!pkt) {
+    return (
+      <View style={hv.empty}>
+        <MaterialCommunityIcons name="code-braces" size={32} color={C.dim} />
+        <Text style={hv.emptyTxt}>Select a packet to inspect</Text>
+      </View>
+    );
+  }
+
+  const hex = pkt.hexView ?? "";
+  const bytes = hex.match(/.{1,2}/g) ?? [];
+
+  const rows: string[][] = [];
+  for (let i = 0; i < bytes.length; i += 16) rows.push(bytes.slice(i, i + 16));
+
+  return (
+    <ScrollView style={hv.scroll} contentContainerStyle={{ padding: 10 }} showsVerticalScrollIndicator>
+      {/* Header */}
+      <View style={hv.fileHeader}>
+        <MaterialCommunityIcons name={pkt.direction === "read" ? "arrow-down-circle" : "arrow-up-circle"}
+          size={13} color={pkt.direction === "read" ? C.blue : C.green} />
+        <Text style={[hv.fileHeaderTxt, { color: pkt.direction === "read" ? C.blue : C.green }]}>
+          {pkt.direction.toUpperCase()} · {pkt.timestamp.toLocaleTimeString()} · {pkt.byteLength} bytes
+        </Text>
+      </View>
+
+      {mode === "TEXT" && (
+        <Text style={hv.rawTxt}>{pkt.data}</Text>
+      )}
+
+      {mode === "HEX" && rows.map((row, ri) => (
+        <View key={ri} style={[hv.dataRow, { backgroundColor: ri % 2 === 0 ? "transparent" : "rgba(255,255,255,0.015)" }]}>
+          <Text style={hv.offset}>{(ri * 16).toString(16).padStart(8, "0")}</Text>
+          <View style={hv.bytesWrap}>
+            {Array.from({ length: 16 }).map((_, bi) => {
+              const b = row[bi];
+              const val = b ? parseInt(b, 16) : 0;
+              const color = !b ? C.dim : val === 0 ? "rgba(50,52,52,1)" : val > 200 ? C.red : val > 100 ? C.yellow : C.blue;
+              return <Text key={bi} style={[hv.byte, { color }]}>{b ?? "  "}</Text>;
+            })}
+          </View>
+          <Text style={hv.ascii}>{row.map((b) => { const v = parseInt(b, 16); return v >= 32 && v < 127 ? String.fromCharCode(v) : "·"; }).join("")}</Text>
+        </View>
+      ))}
+
+      {mode === "ASCII" && rows.map((row, ri) => (
+        <View key={ri} style={hv.dataRow}>
+          <Text style={hv.offset}>{(ri * 16).toString(16).padStart(4, "0")}</Text>
+          <Text style={hv.asciiOnly}>{row.map((b) => { const v = parseInt(b, 16); return v >= 32 && v < 127 ? String.fromCharCode(v) : "."; }).join("")}</Text>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+const hv = StyleSheet.create({
+  scroll: { flex: 1, backgroundColor: C.term },
+  empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: C.term },
+  emptyTxt: { color: C.muted, fontSize: 12 },
+  fileHeader: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(35,39,41,1)", borderRadius: 6, padding: 8, marginBottom: 8 },
+  fileHeaderTxt: { fontSize: 11, fontWeight: "600" },
+  rawTxt: { color: C.green, fontSize: 11, fontFamily: "monospace", lineHeight: 18 },
+  dataRow: { flexDirection: "row", alignItems: "center", paddingVertical: 2 },
+  offset: { color: "rgba(60,62,62,1)", fontSize: 9, width: 68 },
+  bytesWrap: { flexDirection: "row", gap: 2, flex: 1 },
+  byte: { fontSize: 9, width: 17, textAlign: "center" },
+  ascii: { color: "rgba(50,150,50,1)", fontSize: 9, width: 96 },
+  asciiOnly: { color: C.green, fontSize: 10, flex: 1 },
+});
+
+// ── Main ──────────────────────────────────────────────────────
 export default function MonitorScreen() {
-  const insets = useSafeAreaInsets();
-  const { packets, connectionStatus, selectedDevice, viewMode, setViewMode, clearPackets } = useUsb();
-  const [selectedPkt, setSelectedPkt] = useState<DataPacket | null>(null);
+  const { packets, clearPackets, connectionStatus } = useUsb();
+  const [selected, setSelected] = useState<DataPacket | null>(null);
+  const [mode, setMode] = useState<ViewMode>("HEX");
+  const listRef = useRef<FlatList>(null);
 
-  const leftPad = Platform.OS === "web" ? 0 : insets.left;
-  const rightPad = Platform.OS === "web" ? 0 : insets.right;
-  const bottomPad = Platform.OS === "web" ? 54 : insets.bottom + 60;
   const isConnected = connectionStatus === "connected";
-
   const rxCount = packets.filter((p) => p.direction === "read").length;
   const txCount = packets.filter((p) => p.direction === "write").length;
 
-  const displayPkt = selectedPkt ?? ([...packets].reverse()[0] ?? null);
-  const displayData = displayPkt
-    ? viewMode === "hex" ? displayPkt.hexView
-    : viewMode === "ascii" ? toAscii(displayPkt.hexView)
-    : displayPkt.data
-    : null;
-
   return (
-    <View style={[styles.root, { paddingLeft: leftPad, paddingRight: rightPad }]}>
-      <GlobalStatusBar />
+    <View style={s.root}>
+      {/* ── Top bar ── */}
+      <View style={s.topBar}>
+        <Pressable style={s.backBtn} onPress={() => router.push("/(tabs)/index" as any)}>
+          <MaterialCommunityIcons name="arrow-left" size={18} color={C.muted} />
+        </Pressable>
+        <MaterialCommunityIcons name="chart-timeline-variant" size={16} color={C.blue} />
+        <Text style={s.topTitle}>Packet Monitor</Text>
 
-      <View style={styles.body}>
-        {/* ── LEFT: Packet list ── */}
-        <View style={styles.logPane}>
-          <View style={[styles.logHead, { borderBottomColor: C.border }]}>
-            <Text style={styles.logTitle}>Packet Log</Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <View style={[styles.chip, { backgroundColor: "rgba(80,180,255,0.15)" }]}>
-                <Text style={[styles.chipTxt, { color: C.blue }]}>↓{rxCount}</Text>
-              </View>
-              <View style={[styles.chip, { backgroundColor: "rgba(110,220,161,0.15)" }]}>
-                <Text style={[styles.chipTxt, { color: C.green }]}>↑{txCount}</Text>
-              </View>
-              <Pressable onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); clearPackets(); setSelectedPkt(null); }}>
-                <Feather name="trash-2" size={13} color={C.muted} />
-              </Pressable>
-            </View>
+        <View style={s.topStats}>
+          <View style={[s.statPill, { borderColor: "rgba(80,180,255,0.4)" }]}>
+            <MaterialCommunityIcons name="arrow-down-circle" size={11} color={C.blue} />
+            <Text style={[s.statTxt, { color: C.blue }]}>{rxCount}</Text>
+          </View>
+          <View style={[s.statPill, { borderColor: "rgba(110,220,161,0.4)" }]}>
+            <MaterialCommunityIcons name="arrow-up-circle" size={11} color={C.green} />
+            <Text style={[s.statTxt, { color: C.green }]}>{txCount}</Text>
+          </View>
+        </View>
+
+        <Pressable style={s.clearBtn} onPress={() => { clearPackets(); setSelected(null); }}>
+          <MaterialCommunityIcons name="delete-outline" size={16} color={C.red} />
+          <Text style={s.clearTxt}>CLEAR</Text>
+        </Pressable>
+
+        {/* Live indicator */}
+        <View style={[s.livePill, { backgroundColor: isConnected ? "rgba(110,220,161,0.1)" : C.card, borderColor: isConnected ? "rgba(110,220,161,0.4)" : C.border }]}>
+          <View style={[s.liveDot, { backgroundColor: isConnected ? C.green : C.muted }]} />
+          <Text style={[s.liveTxt, { color: isConnected ? C.green : C.muted }]}>{isConnected ? "LIVE" : "IDLE"}</Text>
+        </View>
+      </View>
+
+      <View style={s.body}>
+        {/* ── LEFT: Packet log ── */}
+        <View style={s.leftPanel}>
+          <View style={s.lPanelHead}>
+            <MaterialCommunityIcons name="format-list-bulleted" size={13} color={C.muted} />
+            <Text style={s.lPanelTitle}>Packet Log</Text>
           </View>
 
           {packets.length === 0 ? (
-            <View style={styles.logEmpty}>
-              <Feather name="activity" size={22} color={C.muted} />
-              <Text style={styles.logEmptyTxt}>{isConnected ? "Listening..." : "No data"}</Text>
+            <View style={s.emptyLog}>
+              <MaterialCommunityIcons name="chart-timeline-variant" size={28} color={C.dim} />
+              <Text style={s.emptyLogTxt}>No data</Text>
+              <Text style={s.emptyLogSub}>Connect a USB device to start capturing</Text>
             </View>
           ) : (
             <FlatList
+              ref={listRef}
               data={[...packets].reverse()}
               keyExtractor={(p) => p.id}
-              contentContainerStyle={{ paddingVertical: 4, paddingHorizontal: 6, paddingBottom: bottomPad, gap: 2 }}
+              renderItem={({ item }) => (
+                <PacketRow
+                  pkt={item}
+                  isSelected={selected?.id === item.id}
+                  onPress={() => setSelected(item)}
+                />
+              )}
               showsVerticalScrollIndicator={false}
-              renderItem={({ item: pkt }) => {
-                const isRx = pkt.direction === "read";
-                const isActive = displayPkt?.id === pkt.id;
-                return (
-                  <Pressable
-                    style={[
-                      styles.logRow,
-                      {
-                        backgroundColor: isActive
-                          ? isRx ? "rgba(80,180,255,0.12)" : "rgba(110,220,161,0.12)"
-                          : "transparent",
-                        borderLeftWidth: 2,
-                        borderLeftColor: isRx ? C.blue : C.green,
-                      },
-                    ]}
-                    onPress={() => { Haptics.selectionAsync(); setSelectedPkt(pkt); }}
-                  >
-                    <View style={styles.logRowTop}>
-                      <Text style={[styles.logDir, { color: isRx ? C.blue : C.green }]}>
-                        {isRx ? "RX" : "TX"}
-                      </Text>
-                      <Text style={styles.logTime}>{formatTs(pkt.timestamp)}</Text>
-                      <Text style={styles.logBytes}>{pkt.byteLength}B</Text>
-                    </View>
-                    <Text style={styles.logData} numberOfLines={1}>{pkt.data}</Text>
-                  </Pressable>
-                );
-              }}
+              contentContainerStyle={{ paddingBottom: 8 }}
+              onContentSizeChange={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
             />
           )}
         </View>
 
         {/* ── RIGHT: Hex viewer ── */}
-        <View style={styles.viewer}>
-          {/* Toolbar */}
-          <View style={[styles.viewerBar, { borderBottomColor: C.border }]}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
-              <View style={[styles.termDot, { backgroundColor: displayPkt?.direction === "read" ? C.blue : C.green }]} />
-              <Text style={styles.viewerTitle}>
-                {displayPkt
-                  ? `${displayPkt.direction.toUpperCase()} · ${formatTs(displayPkt.timestamp)} · ${displayPkt.byteLength}B`
-                  : "Data Viewer"}
-              </Text>
-            </View>
-            <View style={{ flexDirection: "row", gap: 4 }}>
-              {(["text", "hex", "ascii"] as const).map((m) => (
-                <Pressable
-                  key={m}
-                  style={[
-                    styles.modeBtn,
-                    { backgroundColor: viewMode === m ? C.blue : "rgba(35,39,41,1)", borderColor: viewMode === m ? C.blue : C.border },
-                  ]}
-                  onPress={() => { Haptics.selectionAsync(); setViewMode(m); }}
-                >
-                  <Text style={[styles.modeTxt, { color: viewMode === m ? "#fff" : C.muted }]}>
-                    {m.toUpperCase()}
-                  </Text>
+        <View style={s.rightPanel}>
+          {/* Viewer toolbar */}
+          <View style={s.viewerBar}>
+            <View style={[s.statusDotBig, { backgroundColor: selected ? (selected.direction === "read" ? C.blue : C.green) : C.dim }]} />
+            <Text style={s.viewerTitle}>
+              {selected ? `${selected.direction.toUpperCase()} · ${selected.byteLength} bytes` : "Data Viewer"}
+            </Text>
+            <View style={s.modeRow}>
+              {(["TEXT", "HEX", "ASCII"] as ViewMode[]).map((m) => (
+                <Pressable key={m} style={[s.modeBtn, { backgroundColor: mode === m ? "rgba(80,180,255,0.15)" : C.card, borderColor: mode === m ? C.blue : C.border }]}
+                  onPress={() => { Haptics.selectionAsync(); setMode(m); }}>
+                  <Text style={[s.modeTxt, { color: mode === m ? C.blue : C.muted }]}>{m}</Text>
                 </Pressable>
               ))}
             </View>
           </View>
 
-          {/* Terminal area */}
-          <ScrollView
-            style={[styles.terminal, { backgroundColor: C.terminal }]}
-            contentContainerStyle={[styles.termContent, { paddingBottom: bottomPad }]}
-            showsVerticalScrollIndicator={false}
-          >
-            {displayPkt ? (
-              <>
-                {/* Packet info header */}
-                <View style={styles.pktHeader}>
-                  {[
-                    { k: "DIRECTION", v: displayPkt.direction.toUpperCase(), c: displayPkt.direction === "read" ? C.blue : C.green },
-                    { k: "TIMESTAMP", v: formatTs(displayPkt.timestamp), c: C.text },
-                    { k: "BYTES", v: displayPkt.byteLength.toString(), c: C.yellow },
-                    { k: "DEVICE", v: selectedDevice?.name ?? "—", c: C.muted },
-                  ].map(({ k, v, c }) => (
-                    <View key={k} style={styles.pktCell}>
-                      <Text style={styles.pktCellKey}>{k}</Text>
-                      <Text style={[styles.pktCellVal, { color: c }]} numberOfLines={1}>{v}</Text>
-                    </View>
-                  ))}
-                </View>
+          {/* Content */}
+          {packets.length === 0 ? (
+            <View style={[hv.empty, { backgroundColor: C.term }]}>
+              <MaterialCommunityIcons name="console-line" size={36} color={C.dim} />
+              <Text style={[hv.emptyTxt, { fontSize: 15 }]}>READY</Text>
+              <Text style={s.readySub}>Connect a USB device to start capturing data</Text>
+            </View>
+          ) : (
+            <HexViewer pkt={selected} mode={mode} />
+          )}
 
-                {/* Data */}
-                {viewMode === "hex" ? (
-                  <HexDump hexStr={displayPkt.hexView} />
-                ) : (
-                  <Text
-                    style={[styles.termText, { color: viewMode === "ascii" ? C.green : C.blue }]}
-                    selectable
-                  >
-                    {displayData}
-                  </Text>
-                )}
-              </>
-            ) : (
-              <View style={{ paddingTop: 36, gap: 10 }}>
-                <Text style={[styles.termCursor, { color: C.blue }]}>█ READY</Text>
-                <Text style={styles.termEmptyTxt}>
-                  {isConnected ? "Waiting for data stream from device..." : "Connect a USB device to start capturing data"}
-                </Text>
-              </View>
-            )}
-          </ScrollView>
-
-          {/* Status bar */}
-          <View style={[styles.termStatus, { paddingBottom: Math.max(8, insets.bottom) }]}>
-            <View style={[styles.liveIndicator, { backgroundColor: isConnected ? C.green : C.muted }]} />
-            <Text style={styles.termStatusTxt}>
-              {isConnected ? `LIVE · ${selectedDevice?.name ?? ""}` : "STANDBY"}
+          {/* Status strip */}
+          <View style={s.statusStrip}>
+            <View style={[s.statusDotBig, { width: 6, height: 6, borderRadius: 3, backgroundColor: isConnected ? C.green : C.dim }]} />
+            <Text style={s.statusStripTxt}>
+              {isConnected ? `● LIVE · ${packets.length} packets` : "○ IDLE · Waiting for device"}
             </Text>
-            <Text style={styles.termStatusRight}>{packets.length} packets captured</Text>
+            {selected && <Text style={s.statusStripRight}>{selected.byteLength} bytes · {mode}</Text>}
           </View>
         </View>
       </View>
@@ -255,56 +240,41 @@ export default function MonitorScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.bg },
+const s = StyleSheet.create({
+  root: { flex: 1, backgroundColor: C.bg, flexDirection: "column" },
+
+  topBar: { height: 44, flexDirection: "row", alignItems: "center", paddingHorizontal: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.panel },
+  backBtn: { width: 28, height: 28, borderRadius: 7, backgroundColor: C.card, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: C.border },
+  topTitle: { color: C.text, fontSize: 13, fontWeight: "700", flex: 1 },
+  topStats: { flexDirection: "row", gap: 5 },
+  statPill: { flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
+  statTxt: { fontSize: 10, fontWeight: "700" },
+  clearBtn: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(255,80,60,0.1)", borderRadius: 6, borderWidth: 1, borderColor: "rgba(255,80,60,0.4)", paddingHorizontal: 8, paddingVertical: 4 },
+  clearTxt: { color: C.red, fontSize: 9, fontWeight: "700" },
+  livePill: { flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderRadius: 5, paddingHorizontal: 7, paddingVertical: 3 },
+  liveDot: { width: 5, height: 5, borderRadius: 3 },
+  liveTxt: { fontSize: 8, fontWeight: "700", letterSpacing: 0.5 },
+
   body: { flex: 1, flexDirection: "row" },
+  card: { backgroundColor: C.card },
 
-  // Log pane
-  logPane: { width: 210, backgroundColor: "rgba(18,22,24,1)", borderRightWidth: 1, borderRightColor: C.border },
-  logHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 10, borderBottomWidth: 1 },
-  logTitle: { color: C.text, fontSize: 12, fontFamily: "Inter_700Bold" },
-  chip: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2 },
-  chipTxt: { fontSize: 9, fontFamily: "Inter_700Bold" },
-  logEmpty: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8 },
-  logEmptyTxt: { color: C.muted, fontSize: 11, fontFamily: "Inter_400Regular" },
-  logRow: { paddingVertical: 6, paddingRight: 6, paddingLeft: 8, borderRadius: 4, gap: 2 },
-  logRowTop: { flexDirection: "row", alignItems: "center", gap: 4 },
-  logDir: { fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 0.3, width: 16 },
-  logTime: { color: C.muted, fontSize: 9, fontFamily: "Inter_400Regular", flex: 1 },
-  logBytes: { color: C.muted, fontSize: 9, fontFamily: "Inter_400Regular" },
-  logData: { color: C.text, fontSize: 10, fontFamily: "Inter_400Regular" },
+  leftPanel: { width: 210, borderRightWidth: 1, borderRightColor: C.border, backgroundColor: C.panel },
+  lPanelHead: { flexDirection: "row", alignItems: "center", gap: 7, padding: 10, borderBottomWidth: 1, borderBottomColor: C.border },
+  lPanelTitle: { color: C.text, fontSize: 12, fontWeight: "700" },
+  emptyLog: { flex: 1, alignItems: "center", justifyContent: "center", padding: 20, gap: 8 },
+  emptyLogTxt: { color: C.muted, fontSize: 13, fontWeight: "500" },
+  emptyLogSub: { color: C.dim, fontSize: 10, textAlign: "center" },
 
-  // Viewer
-  viewer: { flex: 1, flexDirection: "column" },
-  viewerBar: { flexDirection: "row", alignItems: "center", padding: 10, borderBottomWidth: 1, gap: 10 },
-  termDot: { width: 7, height: 7, borderRadius: 4 },
-  viewerTitle: { color: C.text, fontSize: 12, fontFamily: "Inter_600SemiBold", flex: 1 },
+  rightPanel: { flex: 1, flexDirection: "column" },
+  viewerBar: { flexDirection: "row", alignItems: "center", gap: 8, padding: 8, borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.panel },
+  statusDotBig: { width: 8, height: 8, borderRadius: 4 },
+  viewerTitle: { color: C.text, fontSize: 11, fontWeight: "600", flex: 1 },
+  modeRow: { flexDirection: "row", gap: 4 },
   modeBtn: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5, borderWidth: 1 },
-  modeTxt: { fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 0.3 },
+  modeTxt: { fontSize: 9, fontWeight: "700" },
+  readySub: { color: C.dim, fontSize: 11, textAlign: "center" },
 
-  // Terminal
-  terminal: { flex: 1 },
-  termContent: { padding: 12, gap: 10 },
-  pktHeader: { flexDirection: "row", gap: 12, backgroundColor: "rgba(28,32,34,1)", borderRadius: 6, padding: 10, marginBottom: 8 },
-  pktCell: { flex: 1, gap: 3 },
-  pktCellKey: { color: C.muted, fontSize: 8, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
-  pktCellVal: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
-  termText: { fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 20 },
-  termCursor: { fontSize: 16, fontFamily: "Inter_700Bold", letterSpacing: 2 },
-  termEmptyTxt: { color: C.muted, fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 18 },
-
-  // Status strip
-  termStatus: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: C.border,
-    backgroundColor: "rgba(28,32,34,1)",
-    gap: 7,
-  },
-  liveIndicator: { width: 6, height: 6, borderRadius: 3 },
-  termStatusTxt: { color: C.muted, fontSize: 10, fontFamily: "Inter_500Medium", flex: 1, letterSpacing: 0.3 },
-  termStatusRight: { color: C.muted, fontSize: 10, fontFamily: "Inter_400Regular" },
+  statusStrip: { flexDirection: "row", alignItems: "center", gap: 6, padding: 8, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: C.panel },
+  statusStripTxt: { color: C.muted, fontSize: 9, fontWeight: "500", flex: 1 },
+  statusStripRight: { color: C.muted, fontSize: 9 },
 });

@@ -1,0 +1,684 @@
+import os, sys, time, ctypes, threading, zlib, re, binascii, tkinter as tk
+from tkinter import filedialog
+from ctypes import c_uint, c_ubyte, c_int, Structure, POINTER, byref
+import customtkinter as ctk
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("dark-blue")
+
+BG="#0b1220"; SURFACE="#111827"; CARD="#172033"; CARD_2="#1e293b"
+BORDER="#243041"; TEXT="#e5e7eb"; MUTED="#94a3b8"
+BLUE="#3b82f6"; CYAN="#06b6d4"; GREEN="#22c55e"; YELLOW="#f59e0b"; RED="#ef4444"
+
+BASE_DIR = getattr(sys,"_MEIPASS",os.path.dirname(os.path.abspath(__file__)))
+DLL_PATH  = os.path.join(BASE_DIR,"ControlCAN.dll")
+DEVTYPE=4; DEVINDEX=0; STATUS_OK=1
+
+# ── CAN IDs ───────────────────────────────────────────────────────────────────
+ID_PING = 0x069   # Step 1: TX id=0x069  payload=[69]
+ID_BUS  = 0x00B   # Steps 2-8: all TX/RX on id=0x00B
+
+# ── Flash constants — must match gen_raw.py exactly ──────────────────────────
+FLASH_SIZE     = 131072   # 128 KB  (131072 / 4 = 32768 CAN frames)
+DATA_PER_FRAME = 4        # d1 d2 d3 d4 per A1 frame
+BITRATE_KBPS   = 500
+
+# ── Bootloader commands ───────────────────────────────────────────────────────
+CMD_UNLOCK = 0xA0; CMD_DATA = 0xA1; CMD_VERIFY = 0xA2; CMD_GO = 0xA3
+ACK_OK     = 0x50   # ACK for UNLOCK and each DATA frame
+ACK_CRC_OK = 0x53   # ACK for VERIFY (CRC pass)
+
+# ── step_cb indices map 1:1 to UI step rows (0-7) ─────────────────────────────
+#   0 = Step 1 PING
+#   1 = Step 2 SYNC
+#   2 = Step 3 ANNOUNCE
+#   3 = Step 4 DEVICE INFO
+#   4 = Step 5 UNLOCK
+#   5 = Step 6 DATA
+#   6 = Step 7 VERIFY
+#   7 = Step 8 GO
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ControlCAN structs
+# ─────────────────────────────────────────────────────────────────────────────
+class VCI_INIT_CONFIG(Structure):
+    _fields_=[("AccCode",c_uint),("AccMask",c_uint),("Reserved",c_uint),
+              ("Filter",c_ubyte),("Timing0",c_ubyte),("Timing1",c_ubyte),("Mode",c_ubyte)]
+
+class VCI_CAN_OBJ(Structure):
+    _fields_=[("ID",c_uint),("TimeStamp",c_uint),("TimeFlag",c_ubyte),
+              ("SendType",c_ubyte),("RemoteFlag",c_ubyte),("ExternFlag",c_ubyte),
+              ("DataLen",c_ubyte),("Data",c_ubyte*8),("Reserved",c_ubyte*3)]
+
+try:
+    canDLL=ctypes.windll.LoadLibrary(DLL_PATH); dll_load_error=None
+except Exception as e:
+    canDLL=None; dll_load_error=str(e)
+
+if canDLL:
+    canDLL.VCI_OpenDevice.argtypes=[c_uint,c_uint,c_uint];   canDLL.VCI_OpenDevice.restype=c_uint
+    canDLL.VCI_CloseDevice.argtypes=[c_uint,c_uint];          canDLL.VCI_CloseDevice.restype=c_uint
+    canDLL.VCI_InitCAN.argtypes=[c_uint,c_uint,c_uint,POINTER(VCI_INIT_CONFIG)]; canDLL.VCI_InitCAN.restype=c_uint
+    canDLL.VCI_StartCAN.argtypes=[c_uint,c_uint,c_uint];      canDLL.VCI_StartCAN.restype=c_uint
+    canDLL.VCI_Transmit.argtypes=[c_uint,c_uint,c_uint,POINTER(VCI_CAN_OBJ),c_uint]; canDLL.VCI_Transmit.restype=c_uint
+    canDLL.VCI_Receive.argtypes=[c_uint,c_uint,c_uint,POINTER(VCI_CAN_OBJ),c_uint,c_int];  canDLL.VCI_Receive.restype=c_uint
+    try: canDLL.VCI_ClearBuffer.argtypes=[c_uint,c_uint,c_uint]; canDLL.VCI_ClearBuffer.restype=c_uint
+    except: pass
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CAN driver helpers
+# ─────────────────────────────────────────────────────────────────────────────
+def open_device():
+    if not canDLL: raise RuntimeError(f"ControlCAN.dll not loaded: {dll_load_error}")
+    if canDLL.VCI_OpenDevice(DEVTYPE,DEVINDEX,0)!=STATUS_OK: raise RuntimeError("VCI_OpenDevice failed")
+
+def init_start(canidx, baud=500):
+    tmap={1000:(0x00,0x14),500:(0x00,0x1C),250:(0x01,0x1C),125:(0x03,0x1C)}
+    if baud not in tmap: raise ValueError(f"Unsupported bitrate: {baud}")
+    t0,t1=tmap[baud]
+    ic=VCI_INIT_CONFIG(0,0xFFFFFFFF,0,0,t0,t1,0)
+    if canDLL.VCI_InitCAN(DEVTYPE,DEVINDEX,canidx,byref(ic))!=STATUS_OK: raise RuntimeError("VCI_InitCAN failed")
+    if canDLL.VCI_StartCAN(DEVTYPE,DEVINDEX,canidx)!=STATUS_OK: raise RuntimeError("VCI_StartCAN failed")
+    if hasattr(canDLL,"VCI_ClearBuffer"):
+        try: canDLL.VCI_ClearBuffer(DEVTYPE,DEVINDEX,canidx)
+        except: pass
+
+def close_device():
+    if canDLL:
+        try: canDLL.VCI_CloseDevice(DEVTYPE,DEVINDEX)
+        except: pass
+
+def tx_frame(canidx, can_id, data:bytes):
+    obj=VCI_CAN_OBJ(); obj.ID=can_id; obj.TimeFlag=0; obj.SendType=0
+    obj.RemoteFlag=0; obj.ExternFlag=0; obj.DataLen=min(len(data),8)
+    for i in range(obj.DataLen): obj.Data[i]=data[i]
+    return canDLL.VCI_Transmit(DEVTYPE,DEVINDEX,canidx,byref(obj),1)==1
+
+def rx_frames(canidx, max_frames=32, timeout_ms=200):
+    buf_t=VCI_CAN_OBJ*max_frames; buf=buf_t()
+    cnt=canDLL.VCI_Receive(DEVTYPE,DEVINDEX,canidx,buf,max_frames,timeout_ms)
+    return [{"id":int(buf[i].ID),"dlc":int(buf[i].DataLen),
+             "data":bytes(buf[i].Data[:buf[i].DataLen])} for i in range(cnt)]
+
+def wait_frame(canidx, rx_id, expected_data:list, timeout_s=5.0):
+    deadline=time.time()+timeout_s
+    while time.time()<deadline:
+        for f in rx_frames(canidx,32,100):
+            if f["id"]!=rx_id: continue
+            if not expected_data: return f
+            if list(f["data"][:len(expected_data)])==expected_data: return f
+    return None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Firmware loader — matches gen_raw.py exactly
+# ─────────────────────────────────────────────────────────────────────────────
+def load_firmware(path:str) -> bytes:
+    ext=os.path.splitext(path)[1].lower()
+    if ext==".bin":
+        with open(path,"rb") as f:
+            raw=f.read()
+    elif ext==".h":
+        with open(path,"r",errors="replace") as f:
+            text=f.read()
+        tokens=re.findall(r"0[xX][0-9A-Fa-f]{2}",text)
+        raw=bytes(int(t,16) for t in tokens)
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
+    if len(raw)<FLASH_SIZE:
+        raw=raw+b"\xff"*(FLASH_SIZE-len(raw))
+    elif len(raw)>FLASH_SIZE:
+        raw=raw[:FLASH_SIZE]
+    return raw
+
+def compute_crc32(data:bytes)->int:
+    return binascii.crc32(data) & 0xFFFFFFFF
+
+
+def fw_chunks(firmware: bytes):
+    for seq in range(len(firmware) // DATA_PER_FRAME):
+        off = seq * DATA_PER_FRAME
+        yield seq, firmware[off], firmware[off+1], firmware[off+2], firmware[off+3]
+
+# In flash_bms(), build frame as:
+
+#                        ^^^^^^^^^^^
+#                        rolling 0x00→0xFF, NOT hardcoded 0x00
+# ─────────────────────────────────────────────────────────────────────────────
+# FLASH SEQUENCE  — corrected, strict 8-step order
+#
+#  step_cb(0)  Step 1  TX  id=0x069  [69]                        PING
+#  step_cb(1)  Step 2  TX  id=0x00B  [69 96 69 96 69 96 69 96]  SYNC
+#  step_cb(2)  Step 3  TX  id=0x00B  [B1]  → RX id=0x00B [B1]  ANNOUNCE
+#  step_cb(3)  Step 4  RX  id=0x456  [11 ...]                   DEVICE INFO
+#  step_cb(4)  Step 5  TX  [A0 00 E2 04 00 00 02 00] → RX [50] UNLOCK
+#  step_cb(5)  Step 6  TX  [A1 00 E2 04 d1..d4] ×32768 → [50]  DATA
+#  step_cb(6)  Step 7  TX  [A2 00 E2 04 crc×4]  → RX [53]      VERIFY
+#  step_cb(7)  Step 8  TX  [A3 00 E2 00 00 00 00 00]            GO
+# ─────────────────────────────────────────────────────────────────────────────
+def flash_bms(canidx, firmware:bytes, progress_cb, log_cb, done_cb, abort_flag, step_cb):
+    n_frames=len(firmware)//DATA_PER_FRAME
+    crc32=compute_crc32(firmware)
+
+    def tx(can_id, data, label):
+        if not tx_frame(canidx,can_id,data):
+            raise RuntimeError(f"{label} TX failed")
+        log_cb(f"   TX  id=0x{can_id:03X}  [{data.hex(' ').upper()}]")
+
+    def rx(rx_id, expected, label, timeout=5.0):
+        exp_str=" ".join(f"{b:02X}" for b in expected) if expected else "(any)"
+        log_cb(f"   RX  id=0x{rx_id:03X}  waiting [{exp_str}] ...")
+        f=wait_frame(canidx,rx_id,expected,timeout_s=timeout)
+        if not f: raise RuntimeError(
+            f"No response: {label}  (id=0x{rx_id:03X}  expected [{exp_str}])")
+        log_cb(f"   GOT id=0x{f['id']:03X}  [{f['data'].hex(' ').upper()}]  ✓")
+        return f
+
+    try:
+        # ── Step 1: Wake ping ─────────────────────────────────────────────────
+        step_cb(0)
+        log_cb(">> Step 1: Wake ping")
+        tx(ID_PING, bytes([0x69]), "PING")
+        time.sleep(0.02)
+
+        # ── Step 2: Bus sync ──────────────────────────────────────────────────
+        step_cb(1)
+        log_cb(">> Step 2: Bus sync")
+        tx(ID_BUS, bytes([0x69,0x96,0x69,0x96,0x69,0x96,0x69,0x96]), "SYNC")
+        time.sleep(0.05)
+
+        # ── Step 3: Announce + wait BMS echo ──────────────────────────────────
+        step_cb(2)
+        log_cb(">> Step 3: Announce  TX [B1]  →  RX [B1]")
+        tx(ID_BUS, bytes([0xB1]), "ANNOUNCE")
+        rx(ID_BUS, [0xB1], "BMS echo B1", timeout=5.0)
+
+        # ── Step 4: Wait device info ──────────────────────────────────────────
+        step_cb(3)
+        log_cb(">> Step 4: Device info  RX id=0x456  [11 ...]")
+        rx(0x456, [0x11], "Device info", timeout=5.0)
+
+        # ── Step 5: UNLOCK ────────────────────────────────────────────────────
+        step_cb(4)
+        log_cb(">> Step 5: UNLOCK  TX [A0 00 E2 04 00 00 02 00]  →  RX [50]")
+        tx(ID_BUS, bytes([0xA0,0x00,0xE2,0x04,0x00,0x00,0x02,0x00]), "UNLOCK")
+        rx(ID_BUS, [ACK_OK], "UNLOCK ACK", timeout=5.0)
+
+        # ── Step 6: DATA frames [A1 00 E2 04 d1 d2 d3 d4] ────────────────────
+        step_cb(5)
+        log_cb(f">> Step 6: DATA  {n_frames:,} frames  [A1 00 E2 04 d1 d2 d3 d4]")
+        log_cb(f"   {n_frames:,} × 4-byte chunks  (131072 B / 4 = 32768 frames)")
+
+        for seq, d1, d2, d3, d4 in fw_chunks(firmware):
+            if abort_flag(): raise RuntimeError("Aborted by user")
+
+            frame = bytes([CMD_DATA, seq & 0xFF, 0xE2, 0x04, d1, d2, d3, d4])
+            if not tx_frame(canidx,ID_BUS,frame):
+                raise RuntimeError(
+                    f"DATA frame {seq} TX failed  offset=0x{seq*4:06X}")
+
+            ack=wait_frame(canidx,ID_BUS,[ACK_OK],timeout_s=2.0)
+            if not ack:
+                raise RuntimeError(
+                    f"No ACK [50] for frame {seq}  offset=0x{seq*4:06X}  "
+                    f"data=[{d1:02X} {d2:02X} {d3:02X} {d4:02X}]")
+
+            if seq%512==0 or seq==n_frames-1:
+                progress_cb((seq+1)/n_frames*100, seq+1, n_frames, seq*4)
+
+        log_cb("   All data frames sent and ACKed  ✓")
+
+        # ── Step 7: VERIFY CRC32 ──────────────────────────────────────────────
+        step_cb(6)
+        crc_b=crc32.to_bytes(4,"little")
+        log_cb(f">> Step 7: VERIFY  CRC32=0x{crc32:08X}  "
+               f"[A2 00 E2 04 {crc_b.hex(' ').upper()}]  →  RX [53]")
+        tx(ID_BUS, bytes([CMD_VERIFY,0x00,0xE2,0x04])+crc_b, "VERIFY")
+        rx(ID_BUS, [ACK_CRC_OK], "CRC ACK (0x53)", timeout=10.0)
+
+        # ── Step 8: GO ────────────────────────────────────────────────────────
+        step_cb(7)
+        log_cb(">> Step 8: GO  TX [A3 00 E2 00 00 00 00 00]")
+        tx(ID_BUS, bytes([CMD_GO,0x00,0xE2,0x00,0x00,0x00,0x00,0x00]), "GO")
+        time.sleep(0.5)
+        log_cb("   BMS restarting into new firmware  ✓")
+
+        done_cb(True, "Flash complete!")
+
+    except Exception as e:
+        done_cb(False, str(e))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UI Widgets
+# ─────────────────────────────────────────────────────────────────────────────
+class SidebarButton(ctk.CTkButton):
+    def __init__(self,master,text,command,accent=False):
+        super().__init__(master,text=text,command=command,height=40,corner_radius=12,
+                         fg_color=BLUE if accent else CARD,
+                         hover_color="#2563eb" if accent else CARD_2,
+                         text_color=TEXT,anchor="w")
+
+class KPIBox(ctk.CTkFrame):
+    def __init__(self,master,title,accent=BLUE):
+        super().__init__(master,fg_color=CARD,corner_radius=14,
+                         border_width=1,border_color=BORDER,height=118)
+        self.grid_columnconfigure(0,weight=1); self.grid_propagate(False)
+        ctk.CTkLabel(self,text=title,text_color=MUTED,
+                     font=ctk.CTkFont(size=12)).grid(row=0,column=0,sticky="w",padx=12,pady=(10,4))
+        ctk.CTkFrame(self,height=4,fg_color=accent,corner_radius=8).grid(
+            row=1,column=0,sticky="ew",padx=12,pady=(0,6))
+        self.value=ctk.CTkLabel(self,text="—",text_color=TEXT,
+                                font=ctk.CTkFont(size=22,weight="bold"))
+        self.value.grid(row=2,column=0,sticky="w",padx=12)
+        self.sub=ctk.CTkLabel(self,text="",text_color=MUTED,font=ctk.CTkFont(size=10))
+        self.sub.grid(row=3,column=0,sticky="w",padx=12,pady=(0,8))
+    def set(self,value,sub="",color=None):
+        self.value.configure(text=value,text_color=color if color else TEXT)
+        self.sub.configure(text=sub)
+
+class KVRow(ctk.CTkFrame):
+    def __init__(self,master,key,value="—",value_color=TEXT):
+        super().__init__(master,fg_color=CARD_2,corner_radius=10,height=34)
+        self.grid_columnconfigure(1,weight=1); self.grid_propagate(False)
+        ctk.CTkLabel(self,text=key,text_color=MUTED,
+                     font=ctk.CTkFont(size=11)).grid(row=0,column=0,sticky="w",padx=10,pady=6)
+        self.val_lbl=ctk.CTkLabel(self,text=value,text_color=value_color,
+                                   font=ctk.CTkFont(size=12,weight="bold"))
+        self.val_lbl.grid(row=0,column=1,sticky="e",padx=10,pady=6)
+    def set(self,value,color=None):
+        self.val_lbl.configure(text=value)
+        if color: self.val_lbl.configure(text_color=color)
+
+class DataCard(ctk.CTkFrame):
+    def __init__(self,master,title):
+        super().__init__(master,fg_color=CARD,corner_radius=14,
+                         border_width=1,border_color=BORDER)
+        self.grid_columnconfigure(0,weight=1)
+        ctk.CTkLabel(self,text=title,text_color=TEXT,
+                     font=ctk.CTkFont(size=16,weight="bold")).grid(
+            row=0,column=0,sticky="w",padx=12,pady=(10,6))
+        self.body=ctk.CTkFrame(self,fg_color="transparent")
+        self.body.grid(row=1,column=0,sticky="nsew",padx=8,pady=(0,8))
+
+class ChannelDialog(ctk.CTkToplevel):
+    def __init__(self,parent,default_ch=0):
+        super().__init__(parent); self.title("Select CAN Channel")
+        self.geometry("340x190"); self.resizable(False,False)
+        self.transient(parent); self.grab_set()
+        self.result=None; self.var=tk.IntVar(value=default_ch)
+        self.configure(fg_color=BG)
+        wrap=ctk.CTkFrame(self,fg_color=CARD,corner_radius=16,
+                          border_width=1,border_color=BORDER)
+        wrap.pack(fill="both",expand=True,padx=16,pady=16)
+        ctk.CTkLabel(wrap,text="Choose CAN TX/RX channel",
+                     font=ctk.CTkFont(size=18,weight="bold"),
+                     text_color=TEXT).pack(anchor="w",padx=16,pady=(14,10))
+        ctk.CTkRadioButton(wrap,text="Channel 0",variable=self.var,value=0).pack(anchor="w",padx=16,pady=5)
+        ctk.CTkRadioButton(wrap,text="Channel 1",variable=self.var,value=1).pack(anchor="w",padx=16,pady=5)
+        btns=ctk.CTkFrame(wrap,fg_color="transparent")
+        btns.pack(fill="x",padx=16,pady=(18,12))
+        ctk.CTkButton(btns,text="Cancel",width=90,fg_color=CARD_2,
+                      hover_color=BORDER,command=self.on_cancel).pack(side="right",padx=(8,0))
+        ctk.CTkButton(btns,text="OK",width=90,fg_color=BLUE,
+                      hover_color="#2563eb",command=self.on_ok).pack(side="right")
+        self.protocol("WM_DELETE_WINDOW",self.on_cancel)
+    def on_ok(self):   self.result=int(self.var.get()); self.destroy()
+    def on_cancel(self): self.result=None; self.destroy()
+
+class SettingsDialog(ctk.CTkToplevel):
+    def __init__(self,parent,settings:dict):
+        super().__init__(parent); self.title("Flash Settings")
+        self.geometry("440x390"); self.resizable(False,False)
+        self.transient(parent); self.grab_set()
+        self.result=None; self.configure(fg_color=BG)
+        wrap=ctk.CTkFrame(self,fg_color=CARD,corner_radius=16,
+                          border_width=1,border_color=BORDER)
+        wrap.pack(fill="both",expand=True,padx=16,pady=16)
+        ctk.CTkLabel(wrap,text="Flash Settings",text_color=TEXT,
+                     font=ctk.CTkFont(size=18,weight="bold")).pack(
+            anchor="w",padx=16,pady=(14,10))
+        fields=[
+            ("Ping ID (hex)",        "ping_id",    f"0x{settings['ping_id']:03X}"),
+            ("Bus ID (hex)",         "bus_id",     f"0x{settings['bus_id']:03X}"),
+            ("Device Info ID (hex)", "info_id",    f"0x{settings['info_id']:03X}"),
+            ("Flash Size (bytes)",   "flash_size", str(settings["flash_size"])),
+            ("Bitrate (kbps)",       "bitrate",    str(settings["bitrate"])),
+        ]
+        self.entries={}
+        for label,key,default in fields:
+            row=ctk.CTkFrame(wrap,fg_color="transparent"); row.pack(fill="x",padx=16,pady=5)
+            ctk.CTkLabel(row,text=label,text_color=MUTED,
+                         font=ctk.CTkFont(size=12),width=175,anchor="w").pack(side="left")
+            e=ctk.CTkEntry(row,width=155,fg_color=CARD_2,border_color=BORDER)
+            e.insert(0,default); e.pack(side="right")
+            self.entries[key]=e
+        btns=ctk.CTkFrame(wrap,fg_color="transparent")
+        btns.pack(fill="x",padx=16,pady=(16,12))
+        ctk.CTkButton(btns,text="Cancel",width=90,fg_color=CARD_2,
+                      hover_color=BORDER,command=self.on_cancel).pack(side="right",padx=(8,0))
+        ctk.CTkButton(btns,text="Save",width=90,fg_color=BLUE,
+                      hover_color="#2563eb",command=self.on_save).pack(side="right")
+        self.protocol("WM_DELETE_WINDOW",self.on_cancel)
+    def on_save(self):
+        try:
+            ping=self.entries["ping_id"].get().strip()
+            bus =self.entries["bus_id"].get().strip()
+            info=self.entries["info_id"].get().strip()
+            self.result={
+                "ping_id":   int(ping,16) if ping.startswith("0x") else int(ping,16),
+                "bus_id":    int(bus,16)  if bus.startswith("0x")  else int(bus,16),
+                "info_id":   int(info,16) if info.startswith("0x") else int(info,16),
+                "flash_size":int(self.entries["flash_size"].get()),
+                "bitrate":   int(self.entries["bitrate"].get()),
+            }
+            self.destroy()
+        except ValueError:
+            pass
+    def on_cancel(self): self.result=None; self.destroy()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main App
+# ─────────────────────────────────────────────────────────────────────────────
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__(); self.title("BMS Firmware Flasher")
+        self.geometry("1320x840"); self.minsize(1100,720)
+        self.configure(fg_color=BG)
+        self.firmware_path=None; self.firmware_data=None
+        self.flashing=False; self.flash_start=0.0
+        self.can_channel=0; self._abort=False
+        self.settings={
+            "ping_id":ID_PING,"bus_id":ID_BUS,"info_id":0x456,
+            "flash_size":FLASH_SIZE,"bitrate":BITRATE_KBPS
+        }
+        self.grid_columnconfigure(1,weight=1); self.grid_rowconfigure(0,weight=1)
+        self._build_sidebar(); self._build_main()
+        self.protocol("WM_DELETE_WINDOW",self.on_close)
+
+    # ── Sidebar ───────────────────────────────────────────────────────────────
+    def _build_sidebar(self):
+        side=ctk.CTkFrame(self,width=224,fg_color=SURFACE,corner_radius=0)
+        side.grid(row=0,column=0,sticky="nsw"); side.grid_propagate(False)
+        ctk.CTkLabel(side,text="BMS",text_color=TEXT,
+                     font=ctk.CTkFont(size=24,weight="bold")).pack(anchor="w",padx=18,pady=(18,2))
+        ctk.CTkLabel(side,text="Firmware Flasher",text_color=MUTED,
+                     font=ctk.CTkFont(size=12)).pack(anchor="w",padx=18,pady=(0,18))
+        SidebarButton(side,"📂  Open Firmware",self.pick_file).pack(fill="x",padx=12,pady=5)
+        SidebarButton(side,"⚡  Flash BMS",self.start_flash,accent=True).pack(fill="x",padx=12,pady=5)
+        SidebarButton(side,"⛔  Abort",self.abort_flash).pack(fill="x",padx=12,pady=5)
+        SidebarButton(side,"⚙   Settings",self.open_settings).pack(fill="x",padx=12,pady=5)
+        ctk.CTkFrame(side,height=1,fg_color=BORDER).pack(fill="x",padx=12,pady=12)
+        ctk.CTkLabel(side,text="CAN Interface",text_color=MUTED,
+                     font=ctk.CTkFont(size=11)).pack(anchor="w",padx=18,pady=(4,2))
+        self.sidebar_status=ctk.CTkLabel(side,text="Not connected",
+                                          text_color=MUTED,font=ctk.CTkFont(size=12))
+        self.sidebar_status.pack(anchor="w",padx=18,pady=(0,4))
+        self.sidebar_hint=ctk.CTkLabel(
+            side,text="Open a .bin or .h file\nthen press Flash BMS",
+            text_color=MUTED,wraplength=184,justify="left",font=ctk.CTkFont(size=11))
+        self.sidebar_hint.pack(anchor="w",padx=18,pady=(0,10))
+        ctk.CTkFrame(side,height=1,fg_color=BORDER).pack(fill="x",padx=12,pady=8)
+        dll_ok=canDLL is not None
+        ctk.CTkLabel(side,
+                     text="ControlCAN.dll  ✓  OK" if dll_ok else "ControlCAN.dll  ✗  MISSING",
+                     text_color=GREEN if dll_ok else RED,
+                     font=ctk.CTkFont(size=11)).pack(anchor="w",padx=18)
+        ctk.CTkFrame(side,height=1,fg_color=BORDER).pack(fill="x",padx=12,pady=8)
+        ctk.CTkLabel(side,text="Protocol IDs",text_color=MUTED,
+                     font=ctk.CTkFont(size=11)).pack(anchor="w",padx=18,pady=(0,2))
+        for label,val in [("PING","0x069"),("BUS","0x00B"),("INFO","0x456")]:
+            row=ctk.CTkFrame(side,fg_color="transparent")
+            row.pack(fill="x",padx=18,pady=1)
+            ctk.CTkLabel(row,text=label,text_color=MUTED,
+                         font=ctk.CTkFont(size=10),width=36).pack(side="left")
+            ctk.CTkLabel(row,text=val,text_color=CYAN,
+                         font=ctk.CTkFont(size=10,weight="bold")).pack(side="left",padx=4)
+
+    # ── Main area ─────────────────────────────────────────────────────────────
+    def _build_main(self):
+        main=ctk.CTkFrame(self,fg_color=BG,corner_radius=0)
+        main.grid(row=0,column=1,sticky="nsew")
+        main.grid_columnconfigure(0,weight=1); main.grid_rowconfigure(1,weight=1)
+        topbar=ctk.CTkFrame(main,fg_color="transparent")
+        topbar.grid(row=0,column=0,sticky="ew",padx=18,pady=(14,6))
+        topbar.grid_columnconfigure(0,weight=1)
+        ctk.CTkLabel(topbar,text="BMS Firmware Flasher",text_color=TEXT,
+                     font=ctk.CTkFont(size=26,weight="bold")).grid(row=0,column=0,sticky="w")
+        ctk.CTkLabel(topbar,
+                     text="ControlCAN.dll  ·  11-bit Standard CAN  ·  500 kbit/s  ·  Custom BMS Bootloader",
+                     text_color=MUTED,font=ctk.CTkFont(size=12)).grid(row=1,column=0,sticky="w",pady=(2,0))
+        body=ctk.CTkFrame(main,fg_color="transparent")
+        body.grid(row=1,column=0,sticky="nsew",padx=18,pady=(0,18))
+        body.grid_columnconfigure(0,weight=1)
+        body.grid_rowconfigure(1,weight=1); body.grid_rowconfigure(2,weight=1)
+
+        # KPI row
+        kpis=ctk.CTkFrame(body,fg_color="transparent")
+        kpis.grid(row=0,column=0,sticky="ew",pady=(0,8))
+        for c in range(5): kpis.grid_columnconfigure(c,weight=1)
+        self.kpi_file  =KPIBox(kpis,"Firmware File",BLUE);  self.kpi_file.grid(row=0,column=0,sticky="ew",padx=4)
+        self.kpi_size  =KPIBox(kpis,"Padded Size",CYAN);    self.kpi_size.grid(row=0,column=1,sticky="ew",padx=4)
+        self.kpi_frames=KPIBox(kpis,"Total Frames",MUTED);  self.kpi_frames.grid(row=0,column=2,sticky="ew",padx=4)
+        self.kpi_crc   =KPIBox(kpis,"CRC32",YELLOW);        self.kpi_crc.grid(row=0,column=3,sticky="ew",padx=4)
+        self.kpi_state =KPIBox(kpis,"Flash State",GREEN);   self.kpi_state.grid(row=0,column=4,sticky="ew",padx=4)
+
+        # Middle grid
+        grid=ctk.CTkFrame(body,fg_color="transparent")
+        grid.grid(row=1,column=0,sticky="nsew")
+        grid.grid_columnconfigure(0,weight=1); grid.grid_columnconfigure(1,weight=1)
+
+        # Flash Progress card
+        cp=DataCard(grid,"Flash Progress")
+        cp.grid(row=0,column=0,sticky="nsew",padx=(0,6))
+        cp.body.grid_columnconfigure(0,weight=1)
+        self.row_stage  =KVRow(cp.body,"Stage","Idle");          self.row_stage.grid(row=0,column=0,sticky="ew",padx=4,pady=3)
+        self.row_frames =KVRow(cp.body,"Frames Sent","—");        self.row_frames.grid(row=1,column=0,sticky="ew",padx=4,pady=3)
+        self.row_offset =KVRow(cp.body,"Byte Offset","—");        self.row_offset.grid(row=2,column=0,sticky="ew",padx=4,pady=3)
+        self.row_elapsed=KVRow(cp.body,"Elapsed","—");            self.row_elapsed.grid(row=3,column=0,sticky="ew",padx=4,pady=3)
+        self.row_speed  =KVRow(cp.body,"Speed","—");              self.row_speed.grid(row=4,column=0,sticky="ew",padx=4,pady=3)
+        self.row_result =KVRow(cp.body,"Result","Waiting",MUTED); self.row_result.grid(row=5,column=0,sticky="ew",padx=4,pady=3)
+        self.progress_bar=ctk.CTkProgressBar(cp.body,progress_color=BLUE,fg_color=CARD_2)
+        self.progress_bar.grid(row=6,column=0,sticky="ew",padx=4,pady=(12,2))
+        self.progress_bar.set(0)
+        self.progress_lbl=ctk.CTkLabel(cp.body,text="0 %",text_color=MUTED,font=ctk.CTkFont(size=11))
+        self.progress_lbl.grid(row=7,column=0,sticky="e",padx=4,pady=(0,4))
+
+        # Protocol Sequence card — exactly 8 rows, indices 0-7
+        cs=DataCard(grid,"Protocol Sequence")
+        cs.grid(row=0,column=1,sticky="nsew",padx=(6,0))
+        cs.body.grid_columnconfigure(0,weight=1)
+        steps=[
+            ("Step 1","TX id=0x069  [69]                           PING"),
+            ("Step 2","TX id=0x00B  [69 96 69 96 69 96 69 96]      SYNC"),
+            ("Step 3","TX id=0x00B  [B1]  →  RX id=0x00B  [B1]    ANNOUNCE"),
+            ("Step 4","RX id=0x456  [11 ...]                        DEVICE INFO"),
+            ("Step 5","TX [A0 00 E2 04 00 00 02 00]  →  RX [50]   UNLOCK"),
+            ("Step 6","TX [A1 00 E2 04 d1..d4] × 32768  →  RX [50]  DATA"),
+            ("Step 7","TX [A2 00 E2 04 crc×4]  →  RX [53]         VERIFY"),
+            ("Step 8","TX [A3 00 E2 00 00 00 00 00]                GO"),
+        ]
+        self.step_rows=[]
+        for i,(lbl,desc) in enumerate(steps):
+            r=KVRow(cs.body,lbl,desc,MUTED)
+            r.grid(row=i,column=0,sticky="ew",padx=4,pady=2)
+            self.step_rows.append(r)
+
+        # Flash Log
+        lc=DataCard(body,"Flash Log")
+        lc.grid(row=2,column=0,sticky="nsew",pady=(8,0))
+        lc.body.grid_columnconfigure(0,weight=1); lc.body.grid_rowconfigure(0,weight=1)
+        self.log_box=ctk.CTkTextbox(
+            lc.body,height=190,fg_color=CARD_2,text_color=TEXT,
+            font=ctk.CTkFont(family="Courier",size=11))
+        self.log_box.grid(row=0,column=0,sticky="nsew",padx=4,pady=4)
+        self.log_box.insert("1.0",
+            "BMS Flasher ready.\n"
+            "Open a .bin or .h firmware file, then press Flash BMS.\n"
+            f"gen_raw.py compatible: pad={FLASH_SIZE} B, "
+            f"frames={FLASH_SIZE//DATA_PER_FRAME:,}, chunk=4 B, crc=binascii.crc32\n")
+        self.log_box.configure(state="disabled")
+
+    # ── Step highlight — safely clamps to 0-7 ────────────────────────────────
+    def _hl(self, idx, color=YELLOW):
+        for i,r in enumerate(self.step_rows):
+            r.val_lbl.configure(text_color=color if i==idx else MUTED)
+
+    def _step_cb(self, idx):
+        # idx must be 0-7, one per UI row
+        if 0<=idx<len(self.step_rows):
+            self.after(0, lambda i=idx: self._hl(i, YELLOW))
+
+    # ── Pick firmware ─────────────────────────────────────────────────────────
+    def pick_file(self):
+        path=filedialog.askopenfilename(
+            title="Select BMS Firmware",
+            filetypes=[("Firmware","*.bin *.h"),("Binary","*.bin"),
+                       ("C Header","*.h"),("All","*.*")])
+        if not path: return
+        try:
+            data=load_firmware(path)
+            n=len(data)//DATA_PER_FRAME
+            crc=compute_crc32(data)
+            self.firmware_path=path; self.firmware_data=data
+            fname=os.path.basename(path)
+            short=(fname[:14]+"…") if len(fname)>14 else fname
+            self.kpi_file.set(short, os.path.dirname(path)[-32:], BLUE)
+            self.kpi_size.set(f"{len(data):,} B", f"{len(data)//1024} KB (0xFF padded)", CYAN)
+            self.kpi_frames.set(f"{n:,}", f"{DATA_PER_FRAME} B / frame", MUTED)
+            self.kpi_crc.set(f"0x{crc:08X}", "binascii.crc32 LE", YELLOW)
+            self.kpi_state.set("Ready","File loaded",GREEN)
+            self.sidebar_hint.configure(text=f"Loaded:\n{fname}\nPress Flash BMS")
+            self._log(f"Loaded  : {path}")
+            self._log(f"Padded  : {len(data):,} B  ({len(data)//1024} KB)")
+            self._log(f"Frames  : {n:,}  (131072 / 4)")
+            self._log(f"CRC32   : 0x{crc:08X}  → VERIFY [A2 00 E2 04 "
+                      f"{crc.to_bytes(4,'little').hex(' ').upper()}]")
+        except Exception as e:
+            self._log(f"ERROR loading firmware: {e}")
+            self.kpi_state.set("Error",str(e)[:30],RED)
+
+    # ── Start flash ────────────────────────────────────────────────────────────
+    def start_flash(self):
+        if self.flashing:
+            self._log("Already flashing — wait or abort"); return
+        if not self.firmware_data:
+            self._log("No firmware loaded — open a .bin or .h file first"); return
+        dlg=ChannelDialog(self,default_ch=self.can_channel)
+        self.wait_window(dlg)
+        if dlg.result is None: return
+        self.can_channel=dlg.result
+        try:
+            open_device()
+            init_start(self.can_channel, self.settings["bitrate"])
+            self.sidebar_status.configure(
+                text=f"Connected  CAN{self.can_channel}",text_color=GREEN)
+        except Exception as e:
+            self._log(f"CAN open error: {e}")
+            self.sidebar_status.configure(text="Open failed",text_color=RED)
+            return
+        self._abort=False; self.flashing=True
+        self.flash_start=time.time()
+        self.kpi_state.set("Flashing…","",YELLOW)
+        self.row_stage.set("Starting…",YELLOW)
+        self.row_result.set("In progress",YELLOW)
+        self.progress_bar.set(0)
+        self.progress_lbl.configure(text="0 %")
+        # reset all step rows to muted
+        for r in self.step_rows: r.val_lbl.configure(text_color=MUTED)
+        fw=bytes(self.firmware_data)
+        n=len(fw)//DATA_PER_FRAME
+        threading.Thread(
+            target=flash_bms,
+            args=(self.can_channel, fw,
+                  self._progress_cb, self._log, self._done_cb,
+                  lambda:self._abort, self._step_cb),
+            daemon=True).start()
+        self._log(f"Flash started  CAN{self.can_channel}  "
+                  f"{len(fw):,} B  {n:,} frames  {self.settings['bitrate']} kbps")
+        self.after(500, self._tick_elapsed)
+
+    # ── Abort ──────────────────────────────────────────────────────────────────
+    def abort_flash(self):
+        self._abort=True; self.flashing=False
+        self._log("Abort requested")
+        self.kpi_state.set("Aborted","",RED)
+        self.row_result.set("Aborted",RED)
+        self.sidebar_status.configure(text="Aborted",text_color=RED)
+        try: close_device()
+        except: pass
+
+    # ── Settings ───────────────────────────────────────────────────────────────
+    def open_settings(self):
+        dlg=SettingsDialog(self,self.settings)
+        self.wait_window(dlg)
+        if dlg.result:
+            self.settings.update(dlg.result)
+            self._log(f"Settings: ping=0x{self.settings['ping_id']:X} "
+                      f"bus=0x{self.settings['bus_id']:X} "
+                      f"info=0x{self.settings['info_id']:X} "
+                      f"size={self.settings['flash_size']} "
+                      f"baud={self.settings['bitrate']} kbps")
+
+    def _progress_cb(self,pct,done,total,offset):
+        self.after(0,lambda:self._update_progress(pct,done,total,offset))
+
+    def _update_progress(self,pct,done,total,offset):
+        self.progress_bar.set(pct/100)
+        self.progress_lbl.configure(text=f"{pct:.1f} %")
+        self.row_frames.set(f"{done:,} / {total:,}",BLUE)
+        self.row_offset.set(f"0x{offset:06X} / 0x{FLASH_SIZE:06X}",MUTED)
+        self.row_stage.set("Sending data…",YELLOW)
+        elapsed=time.time()-self.flash_start
+        self.row_elapsed.set(f"{elapsed:.1f} s",TEXT)
+        if elapsed>0:
+            speed=(done*DATA_PER_FRAME)/elapsed
+            self.row_speed.set(f"{speed:.0f} B/s  ({speed*8/1000:.1f} kbit/s)",TEXT)
+
+    def _done_cb(self,success,message):
+        self.after(0,lambda:self._on_done(success,message))
+
+    def _on_done(self,success,message):
+        self.flashing=False
+        try: close_device()
+        except: pass
+        elapsed=time.time()-self.flash_start
+        if success:
+            self.kpi_state.set("Done ✓",f"{elapsed:.1f} s",GREEN)
+            self.row_stage.set("Complete",GREEN)
+            self.row_result.set("SUCCESS ✓",GREEN)
+            self.progress_bar.set(1.0)
+            self.progress_lbl.configure(text="100 %")
+            self.sidebar_status.configure(text="Flash complete",text_color=GREEN)
+            for r in self.step_rows: r.val_lbl.configure(text_color=GREEN)
+        else:
+            self.kpi_state.set("Failed ✗","",RED)
+            self.row_stage.set("Error",RED)
+            self.row_result.set(f"FAIL: {message[:30]}",RED)
+            self.sidebar_status.configure(text="Flash failed",text_color=RED)
+        self._log(f"{'DONE' if success else 'FAILED'}: {message}  [{elapsed:.1f} s]")
+
+    def _tick_elapsed(self):
+        if self.flashing:
+            elapsed=time.time()-self.flash_start
+            self.row_elapsed.set(f"{elapsed:.1f} s",TEXT)
+            self.after(500,self._tick_elapsed)
+
+    def _log(self,text):
+        self.after(0,lambda:self._append_log(text))
+
+    def _append_log(self,text):
+        self.log_box.configure(state="normal")
+        self.log_box.insert("end",f"[{time.strftime('%H:%M:%S')}]  {text}\n")
+        self.log_box.see("end")
+        lines=self.log_box.get("1.0","end").splitlines()
+        if len(lines)>400:
+            self.log_box.delete("1.0",f"{len(lines)-320}.0")
+        self.log_box.configure(state="disabled")
+
+    def on_close(self):
+        self._abort=True; self.flashing=False
+        try: close_device()
+        except: pass
+        self.destroy()
+
+if __name__=="__main__":
+    app=App(); app.mainloop()

@@ -1,123 +1,80 @@
 import { BlurView } from "expo-blur";
-import { isLiquidGlassAvailable } from "expo-glass-effect";
 import { Tabs } from "expo-router";
-import { Icon, Label, NativeTabs } from "expo-router/unstable-native-tabs";
-import { SymbolView } from "expo-symbols";
 import { Feather } from "@expo/vector-icons";
 import React from "react";
 import { Platform, StyleSheet, View } from "react-native";
-import { useColors } from "@/hooks/useColors";
 
-function NativeTabLayout() {
-  return (
-    <NativeTabs>
-      <NativeTabs.Trigger name="index">
-        <Icon sf={{ default: "cable.connector.horizontal", selected: "cable.connector.horizontal" }} />
-        <Label>Devices</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="monitor">
-        <Icon sf={{ default: "waveform", selected: "waveform" }} />
-        <Label>Monitor</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="write">
-        <Icon sf={{ default: "square.and.pencil", selected: "square.and.pencil.fill" }} />
-        <Label>Write</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="settings">
-        <Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} />
-        <Label>Settings</Label>
-      </NativeTabs.Trigger>
-    </NativeTabs>
-  );
-}
+const C = {
+  bg:      "rgba(18,22,24,1)",
+  active:  "#6EDCA1",
+  inactive: "rgba(120,122,122,1)",
+  border:  "rgba(51,56,58,1)",
+};
 
-function ClassicTabLayout() {
-  const colors = useColors();
-  const isIOS = Platform.OS === "ios";
-  const isWeb = Platform.OS === "web";
-
+export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.mutedForeground,
+        tabBarActiveTintColor: C.active,
+        tabBarInactiveTintColor: C.inactive,
         headerShown: false,
         tabBarStyle: {
           position: "absolute",
-          backgroundColor: colors.navBackground,
+          backgroundColor: C.bg,
           borderTopWidth: 1,
-          borderTopColor: colors.border,
+          borderTopColor: C.border,
           elevation: 0,
-          height: isWeb ? 54 : 52,
+          height: Platform.OS === "ios" ? 72 : Platform.OS === "web" ? 54 : 56,
+          paddingBottom: Platform.OS === "ios" ? 14 : 6,
         },
         tabBarLabelStyle: {
-          fontSize: 10,
-          fontFamily: "Inter_500Medium",
-          marginBottom: isWeb ? 4 : 0,
+          fontSize: 9,
+          fontFamily: "Inter_600SemiBold",
+          letterSpacing: 0.5,
         },
         tabBarBackground: () =>
-          isIOS ? (
-            <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
+          Platform.OS === "ios" ? (
+            <BlurView intensity={90} tint="dark" style={StyleSheet.absoluteFill} />
           ) : (
-            <View style={[StyleSheet.absoluteFill, { backgroundColor: colors.navBackground }]} />
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: C.bg }]} />
           ),
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
-          title: "Devices",
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="cable.connector.horizontal" tintColor={color} size={22} />
-            ) : (
-              <Feather name="hard-drive" size={20} color={color} />
-            ),
+          title: "Dashboard",
+          tabBarIcon: ({ color, size }) => <Feather name="home" size={size - 2} color={color} />,
         }}
       />
       <Tabs.Screen
         name="monitor"
         options={{
           title: "Monitor",
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="waveform" tintColor={color} size={22} />
-            ) : (
-              <Feather name="activity" size={20} color={color} />
-            ),
+          tabBarIcon: ({ color, size }) => <Feather name="activity" size={size - 2} color={color} />,
         }}
       />
       <Tabs.Screen
         name="write"
         options={{
           title: "Write",
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="square.and.pencil" tintColor={color} size={22} />
-            ) : (
-              <Feather name="edit-3" size={20} color={color} />
-            ),
+          tabBarIcon: ({ color, size }) => <Feather name="terminal" size={size - 2} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="decoder"
+        options={{
+          title: "Decoder",
+          tabBarIcon: ({ color, size }) => <Feather name="file-text" size={size - 2} color={color} />,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: "Settings",
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="gearshape" tintColor={color} size={22} />
-            ) : (
-              <Feather name="settings" size={20} color={color} />
-            ),
+          tabBarIcon: ({ color, size }) => <Feather name="settings" size={size - 2} color={color} />,
         }}
       />
     </Tabs>
   );
-}
-
-export default function TabLayout() {
-  if (isLiquidGlassAvailable()) {
-    return <NativeTabLayout />;
-  }
-  return <ClassicTabLayout />;
 }

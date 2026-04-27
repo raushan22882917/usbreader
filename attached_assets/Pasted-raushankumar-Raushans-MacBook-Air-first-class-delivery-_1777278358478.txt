@@ -1,0 +1,18 @@
+raushankumar@Raushans-MacBook-Air first-class-delivery-admin % npx expo ru
+n:android
+env: load .env
+env: export NEXT_PUBLIC_VERSION GENERATE_SOURCEMAP NEXT_PUBLIC_GOOGLE_MAPS_API_KEY EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID NEXT_PUBLIC_AUTH_URL NEXT_PUBLIC_NEXTAUTH_SECRET NEXT_PUBLIC_JWT_TIMEOUT NEXT_PUBLIC_JWT_SECRET FIREBASE_PROJECT_ID FIREBASE_PRIVATE_KEY_ID FIREBASE_PRIVATE_KEY FIREBASE_CLIENT_EMAIL FIREBASE_CLIENT_ID FIREBASE_AUTH_URI FIREBASE_TOKEN_URI FIREBASE_AUTH_PROVIDER_X509_CERT_URL FIREBASE_CLIENT_X509_CERT_URL FIREBASE_UNIVERSE_DOMAIN NEXT_PUBLIC_FIREBASE_API_KEY NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN NEXT_PUBLIC_FIREBASE_PROJECT_ID NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID NEXT_PUBLIC_FIREBASE_APP_ID SMTP_EMAIL SMTP_PASSWORD NEXT_PUBLIC_APP_URL CRON_SECRET CHARGEANYWHERE_MERCHANT_ID CHARGEANYWHERE_TERMINAL_ID CHARGEANYWHERE_SECRET_KEY CHARGEANYWHERE_BASE_URL CHARGEANYWHERE_SUCCESS_URL CHARGEANYWHERE_FAILURE_URL CHARGEANYWHERE_WEBHOOK_URL IMAP_HOST IMAP_PORT IMAP_SECURE IMAP_USER IMAP_PASSWORD SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_FROM_EMAIL SMTP_FROM_NAME
+› Opening emulator Pixel_9_Pro_XL
+PluginError: Failed to resolve plugin for module "@react-native-firebase/app" relative to "/Users/raushankumar/Downloads/first-class-delivery-admin". Do you have node modules installed?
+PluginError: Failed to resolve plugin for module "@react-native-firebase/app" relative to "/Users/raushankumar/Downloads/first-class-delivery-admin". Do you have node modules installed?
+    at resolvePluginForModule (/Users/raushankumar/Downloads/first-class-delivery-admin/node_modules/@expo/config-plugins/src/utils/plugin-resolver.ts:52:9)
+    at resolveConfigPluginFunctionWithInfo (/Users/raushankumar/Downloads/first-class-delivery-admin/node_modules/@expo/config-plugins/src/utils/plugin-resolver.ts:110:50)
+    at resolveConfigPluginFunction (/Users/raushankumar/Downloads/first-class-delivery-admin/node_modules/@expo/config-plugins/src/utils/plugin-resolver.ts:104:22)
+    at withStaticPlugin (/Users/raushankumar/Downloads/first-class-delivery-admin/node_modules/@expo/config-plugins/src/plugins/withStaticPlugin.ts:79:47)
+    at reduce (/Users/raushankumar/Downloads/first-class-delivery-admin/node_modules/@expo/config-plugins/src/plugins/withPlugins.ts:20:59)
+    at Array.reduce (<anonymous>)
+    at withPlugins (/Users/raushankumar/Downloads/first-class-delivery-admin/node_modules/@expo/config-plugins/src/plugins/withPlugins.ts:20:18)
+    at withConfigPlugins (/Users/raushankumar/Downloads/first-class-delivery-admin/node_modules/@expo/config/src/plugins/withConfigPlugins.ts:19:25)
+    at fillAndReturnConfig (/Users/raushankumar/Downloads/first-class-delivery-admin/node_modules/@expo/config/src/Config.ts:152:52)
+    at getConfig (/Users/raushankumar/Downloads/first-class-delivery-admin/node_modules/@expo/config/src/Config.ts:217:10)
+raushankumar@Raushans-MacBook-Air first-class-delivery-admin % 

@@ -1,85 +1,76 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
-import { useColors } from "@/hooks/useColors";
+import { useUsb } from "@/context/UsbContext";
 
-interface StatusBarProps {
-  status: "idle" | "connected" | "disconnected" | "error";
-  deviceName?: string;
-  packetCount: number;
-}
+const C = {
+  bg: "rgba(21,25,27,1)",
+  border: "rgba(51,56,58,1)",
+  text: "rgba(200,201,201,1)",
+  muted: "rgba(120,122,122,1)",
+  green: "#6EDCA1",
+  red: "#FF503C",
+};
 
-export function UsbStatusBar({ status, deviceName, packetCount }: StatusBarProps) {
-  const colors = useColors();
+export function GlobalStatusBar() {
+  const [time, setTime] = useState(new Date());
+  const { connectionStatus, selectedDevice, packets } = useUsb();
 
-  const config = {
-    idle: {
-      icon: "wifi-off" as const,
-      label: "No device connected",
-      bg: colors.muted,
-      fg: colors.mutedForeground,
-    },
-    connected: {
-      icon: "zap" as const,
-      label: `Connected: ${deviceName ?? "Unknown"}`,
-      bg: colors.success + "22",
-      fg: colors.success,
-    },
-    disconnected: {
-      icon: "wifi-off" as const,
-      label: "Device disconnected",
-      bg: colors.warning + "22",
-      fg: colors.warning,
-    },
-    error: {
-      icon: "alert-triangle" as const,
-      label: "Connection error",
-      bg: colors.destructive + "22",
-      fg: colors.destructive,
-    },
-  }[status];
+  useEffect(() => {
+    const t = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const isConnected = connectionStatus === "connected";
+  const rxCount = packets.filter((p) => p.direction === "read").length;
+  const txCount = packets.filter((p) => p.direction === "write").length;
 
   return (
-    <View
-      style={[
-        styles.container,
-        { backgroundColor: config.bg, borderRadius: colors.radius - 4 },
-      ]}
-    >
-      <Feather name={config.icon} size={14} color={config.fg} />
-      <Text style={[styles.label, { color: config.fg }]}>{config.label}</Text>
-      {status === "connected" && (
-        <View style={styles.badge}>
-          <Text style={[styles.badgeText, { color: config.fg }]}>
-            {packetCount} packets
-          </Text>
-        </View>
-      )}
+    <View style={styles.bar}>
+      <Text style={styles.time}>
+        {time.toLocaleDateString()} {time.toLocaleTimeString([], { hour12: false })}
+      </Text>
+      <View style={styles.center}>
+        {selectedDevice ? (
+          <Text style={styles.devName} numberOfLines={1}>{selectedDevice.name}</Text>
+        ) : null}
+      </View>
+      <View style={styles.right}>
+        {isConnected && (
+          <>
+            <View style={[styles.chip, { backgroundColor: "rgba(80,180,255,0.15)" }]}>
+              <Text style={[styles.chipTxt, { color: "#50B4FF" }]}>↓ {rxCount}</Text>
+            </View>
+            <View style={[styles.chip, { backgroundColor: "rgba(110,220,161,0.15)" }]}>
+              <Text style={[styles.chipTxt, { color: C.green }]}>↑ {txCount}</Text>
+            </View>
+          </>
+        )}
+        <Feather
+          name={isConnected ? "check-circle" : "x-circle"}
+          size={13}
+          color={isConnected ? C.green : C.red}
+        />
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  bar: {
+    height: 32,
+    backgroundColor: C.bg,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
-    marginBottom: 14,
+    paddingHorizontal: 14,
+    gap: 10,
   },
-  label: {
-    flex: 1,
-    fontSize: 13,
-    fontFamily: "Inter_500Medium",
-  },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 20,
-  },
-  badgeText: {
-    fontSize: 11,
-    fontFamily: "Inter_500Medium",
-  },
+  time: { color: C.text, fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  center: { flex: 1, alignItems: "center" },
+  devName: { color: C.muted, fontSize: 11, fontFamily: "Inter_400Regular" },
+  right: { flexDirection: "row", alignItems: "center", gap: 6 },
+  chip: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 },
+  chipTxt: { fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 0.3 },
 });

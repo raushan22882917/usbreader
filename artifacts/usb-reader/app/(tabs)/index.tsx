@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -12,678 +12,419 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { useColors } from "@/hooks/useColors";
-import { useUsb } from "@/context/UsbContext";
-import { DiskDeviceCard } from "@/components/DiskDeviceCard";
+import { useUsb, UsbDevice } from "@/context/UsbContext";
+import { GlobalStatusBar } from "@/components/StatusBar";
+import { DiskPlatterSvg, ArcGauge, HBar } from "@/components/SvgGauges";
 
-function StatBox({
-  label,
-  value,
-  icon,
-  accent,
+const C = {
+  bg: "rgba(21,25,27,1)",
+  card: "rgba(28,32,34,1)",
+  border: "rgba(51,56,58,1)",
+  text: "rgba(220,221,221,1)",
+  muted: "rgba(120,122,122,1)",
+  mid: "rgba(160,162,162,1)",
+  green: "#6EDCA1",
+  yellow: "#FFC832",
+  red: "#FF503C",
+  blue: "#50B4FF",
+  primary: "#3b82f6",
+};
+
+function DeviceListCard({
+  device,
+  isSelected,
+  onPress,
 }: {
-  label: string;
-  value: string | number;
-  icon: React.ComponentProps<typeof Feather>["name"];
-  accent: string;
+  device: UsbDevice;
+  isSelected: boolean;
+  onPress: () => void;
 }) {
-  const colors = useColors();
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (device.connected) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.6, duration: 800, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
+        ])
+      ).start();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [device.connected]);
+
   return (
-    <View
+    <Pressable
       style={[
-        statStyles.box,
-        { backgroundColor: colors.card, borderColor: colors.border, borderRadius: colors.radius },
+        styles.listCard,
+        {
+          backgroundColor: isSelected
+            ? device.connected ? "rgba(110,220,161,0.08)" : "rgba(59,130,246,0.1)"
+            : C.card,
+          borderColor: isSelected
+            ? device.connected ? "rgba(110,220,161,0.45)" : "rgba(59,130,246,0.45)"
+            : C.border,
+        },
       ]}
+      onPress={() => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        onPress();
+      }}
     >
-      <View style={[statStyles.iconWrap, { backgroundColor: accent + "22" }]}>
-        <Feather name={icon} size={16} color={accent} />
+      <View style={styles.listCardLeft}>
+        <View style={[styles.diskDot, { backgroundColor: device.connected ? C.green : C.border }]}>
+          {device.connected && (
+            <Animated.View
+              style={[
+                styles.diskPulse,
+                { backgroundColor: C.green, opacity: pulseAnim.interpolate({ inputRange: [1, 1.6], outputRange: [0.5, 0] }), transform: [{ scale: pulseAnim }] },
+              ]}
+            />
+          )}
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.listCardName} numberOfLines={1}>{device.name}</Text>
+          <Text style={styles.listCardMfr} numberOfLines={1}>
+            {device.manufacturerName ?? `VID ${device.vendorId?.toString(16).toUpperCase().padStart(4, "0")}`}
+          </Text>
+        </View>
       </View>
-      <Text style={[statStyles.value, { color: colors.foreground }]}>{value}</Text>
-      <Text style={[statStyles.label, { color: colors.mutedForeground }]}>{label}</Text>
+      <View style={[styles.listCardStatus, {
+        backgroundColor: device.connected ? "rgba(110,220,161,0.15)" : "rgba(51,56,58,0.5)",
+        borderRadius: 4,
+      }]}>
+        <Text style={[styles.listCardStatusTxt, { color: device.connected ? C.green : C.muted }]}>
+          {device.connected ? "LIVE" : "OFF"}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function StatCard({ label, value, color, bar }: { label: string; value: string; color: string; bar?: number }) {
+  return (
+    <View style={[styles.statCard, { borderColor: C.border }]}>
+      <Text style={[styles.statVal, { color }]}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+      {bar !== undefined && (
+        <View style={{ marginTop: 6 }}>
+          <HBar pct={bar} color={color} width={90} height={5} />
+        </View>
+      )}
     </View>
   );
 }
 
-const statStyles = StyleSheet.create({
-  box: {
-    flex: 1,
-    padding: 12,
-    borderWidth: 1,
-    alignItems: "center",
-    gap: 4,
-  },
-  iconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 2,
-  },
-  value: {
-    fontSize: 20,
-    fontFamily: "Inter_700Bold",
-  },
-  label: {
-    fontSize: 10,
-    fontFamily: "Inter_500Medium",
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
-  },
-});
-
 export default function DevicesScreen() {
-  const colors = useColors();
   const insets = useSafeAreaInsets();
   const {
-    devices,
-    selectedDevice,
-    connectionStatus,
-    isScanning,
-    isConnecting,
-    lastError,
-    packets,
-    scanForDevices,
-    connectDevice,
-    disconnectDevice,
-    selectDevice,
+    devices, selectedDevice, connectionStatus,
+    isScanning, isConnecting, lastError, packets,
+    scanForDevices, connectDevice, disconnectDevice, selectDevice,
   } = useUsb();
 
-  const glowAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (connectionStatus === "connected") {
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(glowAnim, { toValue: 1, duration: 1500, useNativeDriver: true }),
-          Animated.timing(glowAnim, { toValue: 0.3, duration: 1500, useNativeDriver: true }),
-        ])
-      ).start();
-    } else {
-      glowAnim.setValue(0);
-    }
-  }, [connectionStatus]);
-
+  const [diskRot, setDiskRot] = useState(0);
+  const isConnected = connectionStatus === "connected";
+  const bottomPad = Platform.OS === "web" ? 54 : insets.bottom + 60;
   const leftPad = Platform.OS === "web" ? 0 : insets.left;
   const rightPad = Platform.OS === "web" ? 0 : insets.right;
-  const topPad = Platform.OS === "web" ? 24 : insets.top;
-  const bottomPad = Platform.OS === "web" ? 84 : insets.bottom + 60;
 
-  const rxCount = packets.filter((p) => p.direction === "read").length;
-  const txCount = packets.filter((p) => p.direction === "write").length;
+  const rxPkts = packets.filter((p) => p.direction === "read");
+  const txPkts = packets.filter((p) => p.direction === "write");
+  const totalBytes = packets.reduce((s, p) => s + p.byteLength, 0);
+  const activityPct = Math.min(packets.length / 50, 1);
 
-  const isConnected = connectionStatus === "connected";
+  useEffect(() => {
+    if (!isConnected) return;
+    const t = setInterval(() => setDiskRot((r) => (r + 6) % 360), 50);
+    return () => clearInterval(t);
+  }, [isConnected]);
+
+  const diskSize = 160;
 
   return (
-    <View
-      style={[
-        styles.root,
-        { backgroundColor: colors.background, paddingLeft: leftPad, paddingRight: rightPad },
-      ]}
-    >
-      {/* ── LEFT SIDEBAR ── */}
-      <View
-        style={[
-          styles.sidebar,
-          { backgroundColor: colors.navBackground, borderRightColor: colors.border },
-        ]}
-      >
-        <View style={[styles.sidebarHeader, { paddingTop: topPad + 8 }]}>
-          <View style={styles.logoRow}>
-            <View style={[styles.logoIcon, { backgroundColor: colors.primary }]}>
-              <Feather name="hard-drive" size={14} color="#fff" />
+    <View style={[styles.root, { paddingLeft: leftPad, paddingRight: rightPad }]}>
+      <GlobalStatusBar />
+
+      <View style={styles.body}>
+        {/* ── LEFT SIDEBAR ── */}
+        <View style={styles.sidebar}>
+          {/* Header */}
+          <View style={styles.sideHead}>
+            <View style={styles.logoRow}>
+              <View style={[styles.logoBox, { backgroundColor: C.primary }]}>
+                <Feather name="hard-drive" size={12} color="#fff" />
+              </View>
+              <Text style={styles.logoText}>USB Manager</Text>
             </View>
-            <Text style={[styles.logoText, { color: colors.foreground }]}>USB Manager</Text>
+            <Pressable
+              style={[styles.scanBtn, { backgroundColor: isScanning ? "rgba(51,56,58,1)" : C.primary }]}
+              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); scanForDevices(); }}
+              disabled={isScanning}
+            >
+              {isScanning
+                ? <ActivityIndicator size="small" color={C.primary} />
+                : <Feather name="refresh-cw" size={12} color="#fff" />}
+            </Pressable>
           </View>
-          <Pressable
-            style={[
-              styles.scanBtn,
-              { backgroundColor: colors.primary, borderRadius: colors.radius - 2 },
-            ]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              scanForDevices();
-            }}
-            disabled={isScanning}
+
+          <Text style={styles.sideLabel}>DRIVES ({devices.length})</Text>
+
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{ paddingBottom: bottomPad, gap: 6 }}
+            showsVerticalScrollIndicator={false}
           >
-            {isScanning ? (
-              <ActivityIndicator size="small" color="#fff" />
+            {devices.length === 0 ? (
+              <View style={styles.emptyDrives}>
+                <Feather name="inbox" size={22} color={C.muted} />
+                <Text style={styles.emptyDrivesTxt}>Tap scan to detect devices</Text>
+              </View>
             ) : (
-              <Feather name="refresh-cw" size={14} color="#fff" />
+              devices.map((d) => (
+                <DeviceListCard
+                  key={d.id}
+                  device={d}
+                  isSelected={selectedDevice?.id === d.id}
+                  onPress={() => selectDevice(d)}
+                />
+              ))
             )}
-          </Pressable>
+          </ScrollView>
         </View>
 
-        <Text style={[styles.sideLabel, { color: colors.mutedForeground }]}>
-          DRIVES ({devices.length})
-        </Text>
-
-        <ScrollView
-          style={styles.deviceList}
-          contentContainerStyle={{ paddingBottom: bottomPad + 10 }}
-          showsVerticalScrollIndicator={false}
-        >
-          {devices.length === 0 ? (
-            <View style={styles.emptyList}>
-              <Feather name="inbox" size={28} color={colors.mutedForeground} />
-              <Text style={[styles.emptyListText, { color: colors.mutedForeground }]}>
-                No devices{"\n"}Tap scan
-              </Text>
-            </View>
-          ) : (
-            devices.map((d) => (
-              <DiskDeviceCard
-                key={d.id}
-                device={d}
-                isSelected={selectedDevice?.id === d.id}
-                onPress={() => selectDevice(d)}
-              />
-            ))
-          )}
-        </ScrollView>
-      </View>
-
-      {/* ── MAIN PANEL ── */}
-      <View style={[styles.main, { paddingTop: topPad, paddingBottom: bottomPad }]}>
-        {selectedDevice ? (
-          <ScrollView showsVerticalScrollIndicator={false}>
-            {/* Device hero */}
-            <View style={styles.heroRow}>
-              {/* Big disk visual */}
-              <View style={styles.bigDiskWrap}>
-                <View
-                  style={[
-                    styles.bigDiskOuter,
-                    {
-                      borderColor: isConnected ? colors.primary + "80" : colors.border,
-                      shadowColor: colors.primary,
-                      shadowOpacity: isConnected ? 0.4 : 0,
-                      shadowRadius: 20,
-                      shadowOffset: { width: 0, height: 0 },
-                      elevation: isConnected ? 12 : 0,
-                    },
-                  ]}
-                >
-                  {[48, 36, 24].map((sz, i) => (
-                    <View
-                      key={sz}
-                      style={{
-                        position: "absolute",
-                        width: sz,
-                        height: sz,
-                        borderRadius: sz / 2,
-                        borderWidth: 1,
-                        borderColor: isConnected
-                          ? colors.primary + (i === 0 ? "50" : i === 1 ? "35" : "20")
-                          : colors.border + "60",
-                      }}
-                    />
-                  ))}
-                  <Animated.View
-                    style={[
-                      styles.bigDiskCore,
-                      {
-                        backgroundColor: isConnected ? colors.primary : colors.secondary,
-                        opacity: isConnected ? glowAnim : 1,
-                      },
-                    ]}
+        {/* ── MAIN PANEL ── */}
+        <View style={[styles.main, { paddingBottom: bottomPad }]}>
+          {selectedDevice ? (
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {/* Top row: Disk graphic + device detail */}
+              <View style={styles.heroRow}>
+                {/* Disk platter */}
+                <View style={styles.diskWrap}>
+                  <DiskPlatterSvg
+                    size={diskSize}
+                    active={isConnected}
+                    activity={activityPct}
+                    color={isConnected ? C.green : C.blue}
+                    rotation={diskRot}
                   />
-                </View>
-                <Text style={[styles.diskLabel, { color: colors.mutedForeground }]}>
-                  {selectedDevice.platform.toUpperCase()} DRIVE
-                </Text>
-              </View>
-
-              {/* Device info */}
-              <View style={styles.deviceInfo}>
-                <Text style={[styles.deviceName, { color: colors.foreground }]}>
-                  {selectedDevice.name}
-                </Text>
-                {selectedDevice.manufacturerName ? (
-                  <Text style={[styles.deviceMfr, { color: colors.mutedForeground }]}>
-                    {selectedDevice.manufacturerName}
-                  </Text>
-                ) : null}
-
-                <View style={styles.idGrid}>
-                  {[
-                    { k: "Vendor ID", v: selectedDevice.vendorId != null ? `0x${selectedDevice.vendorId.toString(16).toUpperCase().padStart(4, "0")}` : "—" },
-                    { k: "Product ID", v: selectedDevice.productId != null ? `0x${selectedDevice.productId.toString(16).toUpperCase().padStart(4, "0")}` : "—" },
-                    { k: "Serial", v: selectedDevice.serialNumber ?? "—" },
-                    { k: "Platform", v: selectedDevice.platform.toUpperCase() },
-                  ].map(({ k, v }) => (
-                    <View key={k} style={styles.idCell}>
-                      <Text style={[styles.idKey, { color: colors.mutedForeground }]}>{k}</Text>
-                      <Text style={[styles.idVal, { color: colors.foreground }]}>{v}</Text>
-                    </View>
-                  ))}
-                </View>
-
-                <View style={styles.actionRow}>
-                  <Pressable
-                    style={[
-                      styles.actionBtn,
-                      {
-                        backgroundColor: isConnected ? colors.destructive : colors.primary,
-                        borderRadius: colors.radius - 2,
-                      },
-                    ]}
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                      if (isConnected) disconnectDevice();
-                      else connectDevice(selectedDevice);
-                    }}
-                    disabled={isConnecting}
-                  >
-                    {isConnecting ? (
-                      <ActivityIndicator size="small" color="#fff" />
-                    ) : (
-                      <>
-                        <Feather name={isConnected ? "x-circle" : "zap"} size={15} color="#fff" />
-                        <Text style={styles.actionBtnText}>
-                          {isConnected ? "Disconnect" : "Connect"}
-                        </Text>
-                      </>
-                    )}
-                  </Pressable>
-
-                  <View
-                    style={[
-                      styles.statusChip,
-                      {
-                        backgroundColor:
-                          isConnected ? colors.success + "22" : colors.muted,
-                        borderRadius: colors.radius - 2,
-                      },
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.statusDot,
-                        {
-                          backgroundColor: isConnected ? colors.success : colors.mutedForeground,
-                        },
-                      ]}
-                    />
-                    <Text
-                      style={[
-                        styles.statusLabel,
-                        { color: isConnected ? colors.success : colors.mutedForeground },
-                      ]}
-                    >
-                      {isConnected ? "CONNECTED" : "DISCONNECTED"}
+                  <View style={[styles.diskStatus, {
+                    backgroundColor: isConnected ? "rgba(110,220,161,0.12)" : "rgba(51,56,58,0.5)",
+                    borderColor: isConnected ? "rgba(110,220,161,0.4)" : C.border,
+                  }]}>
+                    <View style={[styles.diskStatusDot, { backgroundColor: isConnected ? C.green : C.muted }]} />
+                    <Text style={[styles.diskStatusTxt, { color: isConnected ? C.green : C.muted }]}>
+                      {isConnected ? "CONNECTED" : "OFFLINE"}
                     </Text>
                   </View>
                 </View>
+
+                {/* Device info */}
+                <View style={styles.deviceInfo}>
+                  <Text style={styles.deviceName}>{selectedDevice.name}</Text>
+                  {selectedDevice.manufacturerName ? (
+                    <Text style={styles.deviceMfr}>{selectedDevice.manufacturerName}</Text>
+                  ) : null}
+
+                  <View style={styles.idGrid}>
+                    {[
+                      { k: "VID", v: selectedDevice.vendorId != null ? `0x${selectedDevice.vendorId.toString(16).toUpperCase().padStart(4, "0")}` : "—" },
+                      { k: "PID", v: selectedDevice.productId != null ? `0x${selectedDevice.productId.toString(16).toUpperCase().padStart(4, "0")}` : "—" },
+                      { k: "Serial", v: selectedDevice.serialNumber ?? "—" },
+                      { k: "Platform", v: selectedDevice.platform.toUpperCase() },
+                    ].map(({ k, v }) => (
+                      <View key={k} style={styles.idCell}>
+                        <Text style={styles.idKey}>{k}</Text>
+                        <Text style={styles.idVal}>{v}</Text>
+                      </View>
+                    ))}
+                  </View>
+
+                  {/* Connect button */}
+                  <Pressable
+                    style={[
+                      styles.connectBtn,
+                      { backgroundColor: isConnected ? "rgba(255,80,60,0.12)" : "rgba(110,220,161,0.12)", borderColor: isConnected ? "rgba(255,80,60,0.5)" : "rgba(110,220,161,0.5)" },
+                    ]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                      isConnected ? disconnectDevice() : connectDevice(selectedDevice);
+                    }}
+                    disabled={isConnecting}
+                  >
+                    {isConnecting
+                      ? <ActivityIndicator size="small" color={C.green} />
+                      : <>
+                        <Feather name={isConnected ? "x-circle" : "zap"} size={14} color={isConnected ? C.red : C.green} />
+                        <Text style={[styles.connectBtnTxt, { color: isConnected ? C.red : C.green }]}>
+                          {isConnected ? "DISCONNECT" : "CONNECT"}
+                        </Text>
+                      </>}
+                  </Pressable>
+                </View>
+
+                {/* Arc gauges */}
+                <View style={styles.gaugesCol}>
+                  <ArcGauge
+                    value={rxPkts.length}
+                    max={Math.max(rxPkts.length + 1, 20)}
+                    size={90}
+                    color={C.blue}
+                    label="RX"
+                    unit="pkts"
+                  />
+                  <ArcGauge
+                    value={txPkts.length}
+                    max={Math.max(txPkts.length + 1, 20)}
+                    size={90}
+                    color={C.green}
+                    label="TX"
+                    unit="pkts"
+                  />
+                </View>
               </View>
-            </View>
 
-            {/* Stat boxes */}
-            <View style={styles.statsRow}>
-              <StatBox label="RX Packets" value={rxCount} icon="arrow-down-circle" accent={colors.primary} />
-              <StatBox label="TX Packets" value={txCount} icon="arrow-up-circle" accent={colors.success} />
-              <StatBox label="Total" value={packets.length} icon="database" accent={colors.warning} />
-              <StatBox
-                label="Status"
-                value={isConnected ? "LIVE" : "IDLE"}
-                icon={isConnected ? "zap" : "pause-circle"}
-                accent={isConnected ? colors.success : colors.mutedForeground}
-              />
-            </View>
+              {/* Stats row */}
+              <View style={styles.statsRow}>
+                <StatCard label="Total Packets" value={packets.length.toString()} color={C.yellow} bar={activityPct} />
+                <StatCard label="Bytes RX" value={rxPkts.reduce((s, p) => s + p.byteLength, 0).toString()} color={C.blue} />
+                <StatCard label="Bytes TX" value={txPkts.reduce((s, p) => s + p.byteLength, 0).toString()} color={C.green} />
+                <StatCard label="Total Bytes" value={totalBytes.toString()} color={C.muted} />
+              </View>
 
-            {/* Data activity strip */}
-            {packets.length > 0 && (
-              <View
-                style={[
-                  styles.activityStrip,
-                  { backgroundColor: colors.card, borderColor: colors.border, borderRadius: colors.radius },
-                ]}
-              >
-                <Text style={[styles.activityLabel, { color: colors.mutedForeground }]}>
-                  RECENT ACTIVITY
-                </Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.activityScroll}>
-                  {[...packets].reverse().slice(0, 8).map((pkt) => (
-                    <View
-                      key={pkt.id}
-                      style={[
-                        styles.activityPill,
-                        {
-                          backgroundColor:
-                            pkt.direction === "read"
-                              ? colors.primary + "22"
-                              : colors.success + "22",
-                          borderRadius: 6,
-                        },
-                      ]}
-                    >
-                      <Feather
-                        name={pkt.direction === "read" ? "arrow-down" : "arrow-up"}
-                        size={10}
-                        color={pkt.direction === "read" ? colors.primary : colors.success}
-                      />
-                      <Text
+              {/* Recent packets strip */}
+              {packets.length > 0 && (
+                <View style={styles.recentCard}>
+                  <Text style={styles.recentTitle}>RECENT PACKETS</Text>
+                  {[...packets].reverse().slice(0, 5).map((pkt) => {
+                    const isRx = pkt.direction === "read";
+                    return (
+                      <View
+                        key={pkt.id}
                         style={[
-                          styles.activityText,
-                          {
-                            color: pkt.direction === "read" ? colors.primary : colors.success,
-                          },
+                          styles.recentRow,
+                          { borderLeftColor: isRx ? C.blue : C.green, borderLeftWidth: 2 },
                         ]}
-                        numberOfLines={1}
                       >
-                        {pkt.data.substring(0, 14)}
-                      </Text>
-                    </View>
-                  ))}
-                </ScrollView>
-              </View>
-            )}
-
-            {lastError ? (
-              <View
-                style={[
-                  styles.errorBox,
-                  {
-                    backgroundColor: colors.destructive + "15",
-                    borderColor: colors.destructive + "40",
-                    borderRadius: colors.radius,
-                  },
-                ]}
-              >
-                <Feather name="alert-circle" size={14} color={colors.destructive} />
-                <Text style={[styles.errorText, { color: colors.destructive }]}>{lastError}</Text>
-              </View>
-            ) : null}
-          </ScrollView>
-        ) : (
-          <View style={styles.noSelection}>
-            <View
-              style={[
-                styles.noSelDisk,
-                { borderColor: colors.border },
-              ]}
-            >
-              <View style={[styles.noSelRing, { borderColor: colors.border }]} />
-              <Feather name="hard-drive" size={28} color={colors.mutedForeground} />
-            </View>
-            <Text style={[styles.noSelTitle, { color: colors.foreground }]}>
-              No Drive Selected
-            </Text>
-            <Text style={[styles.noSelSub, { color: colors.mutedForeground }]}>
-              Scan and select a USB device from the left panel
-            </Text>
-            <Pressable
-              style={[
-                styles.noSelBtn,
-                { borderColor: colors.primary, borderRadius: colors.radius },
-              ]}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                scanForDevices();
-              }}
-              disabled={isScanning}
-            >
-              {isScanning ? (
-                <ActivityIndicator size="small" color={colors.primary} />
-              ) : (
-                <>
-                  <Feather name="search" size={14} color={colors.primary} />
-                  <Text style={[styles.noSelBtnText, { color: colors.primary }]}>Scan Now</Text>
-                </>
+                        <Text style={[styles.recentDir, { color: isRx ? C.blue : C.green }]}>
+                          {isRx ? "RX" : "TX"}
+                        </Text>
+                        <Text style={styles.recentTime}>
+                          {pkt.timestamp.toLocaleTimeString([], { hour12: false })}
+                        </Text>
+                        <Text style={styles.recentData} numberOfLines={1}>{pkt.data}</Text>
+                        <Text style={styles.recentBytes}>{pkt.byteLength}B</Text>
+                      </View>
+                    );
+                  })}
+                </View>
               )}
-            </Pressable>
-          </View>
-        )}
+
+              {lastError ? (
+                <View style={styles.errorBox}>
+                  <Feather name="alert-triangle" size={14} color={C.red} />
+                  <Text style={styles.errorTxt}>{lastError}</Text>
+                </View>
+              ) : null}
+            </ScrollView>
+          ) : (
+            /* No device selected */
+            <View style={styles.noSel}>
+              <DiskPlatterSvg size={120} active={false} color={C.muted} />
+              <Text style={styles.noSelTitle}>No Drive Selected</Text>
+              <Text style={styles.noSelSub}>Scan for USB devices and select one from the list</Text>
+              <Pressable
+                style={[styles.noSelBtn, { borderColor: "rgba(110,220,161,0.5)" }]}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); scanForDevices(); }}
+                disabled={isScanning}
+              >
+                {isScanning
+                  ? <ActivityIndicator size="small" color={C.green} />
+                  : <>
+                    <Feather name="search" size={13} color={C.green} />
+                    <Text style={[styles.noSelBtnTxt, { color: C.green }]}>SCAN DEVICES</Text>
+                  </>}
+              </Pressable>
+            </View>
+          )}
+        </View>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    flexDirection: "row",
-  },
-  sidebar: {
-    width: 240,
-    borderRightWidth: 1,
-    paddingHorizontal: 12,
-    paddingTop: 0,
-  },
-  sidebarHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 14,
-  },
-  logoRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  logoIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 7,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  logoText: {
-    fontSize: 14,
-    fontFamily: "Inter_700Bold",
-  },
-  scanBtn: {
-    width: 32,
-    height: 32,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sideLabel: {
-    fontSize: 9,
-    fontFamily: "Inter_600SemiBold",
-    letterSpacing: 1,
-    marginBottom: 10,
-  },
-  deviceList: {
-    flex: 1,
-  },
-  emptyList: {
-    alignItems: "center",
-    paddingTop: 40,
-    gap: 10,
-  },
-  emptyListText: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-    textAlign: "center",
-    lineHeight: 18,
-  },
-  main: {
-    flex: 1,
-    paddingHorizontal: 20,
-  },
-  heroRow: {
-    flexDirection: "row",
-    gap: 24,
-    marginBottom: 16,
-    alignItems: "center",
-  },
-  bigDiskWrap: {
-    alignItems: "center",
-    gap: 8,
-  },
-  bigDiskOuter: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    borderWidth: 2.5,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  bigDiskCore: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-  },
-  diskLabel: {
-    fontSize: 9,
-    fontFamily: "Inter_600SemiBold",
-    letterSpacing: 1,
-  },
-  deviceInfo: {
-    flex: 1,
-    gap: 6,
-  },
-  deviceName: {
-    fontSize: 22,
-    fontFamily: "Inter_700Bold",
-  },
-  deviceMfr: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-  },
-  idGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginTop: 4,
-  },
-  idCell: {
-    minWidth: 90,
-    gap: 2,
-  },
-  idKey: {
-    fontSize: 9,
-    fontFamily: "Inter_500Medium",
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
-  },
-  idVal: {
-    fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
-  },
-  actionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginTop: 6,
-  },
-  actionBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-  },
-  actionBtnText: {
-    fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
-    color: "#fff",
-  },
-  statusChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-  },
-  statusLabel: {
-    fontSize: 11,
-    fontFamily: "Inter_700Bold",
-    letterSpacing: 0.8,
-  },
-  statsRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginBottom: 14,
-  },
-  activityStrip: {
-    padding: 12,
-    borderWidth: 1,
-    marginBottom: 12,
-  },
-  activityLabel: {
-    fontSize: 9,
-    fontFamily: "Inter_600SemiBold",
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
-  activityScroll: {},
-  activityPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    marginRight: 6,
-  },
-  activityText: {
-    fontSize: 11,
-    fontFamily: "Inter_400Regular",
-    maxWidth: 100,
-  },
-  errorBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    padding: 12,
-    borderWidth: 1,
-  },
-  errorText: {
-    flex: 1,
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-  },
-  noSelection: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-  },
-  noSelDisk: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    borderWidth: 2,
-    borderStyle: "dashed",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 4,
-  },
-  noSelRing: {
-    position: "absolute",
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    borderWidth: 1,
-    borderStyle: "dashed",
-  },
-  noSelTitle: {
-    fontSize: 18,
-    fontFamily: "Inter_600SemiBold",
-  },
-  noSelSub: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-    textAlign: "center",
-    maxWidth: 240,
-  },
-  noSelBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 18,
-    paddingVertical: 9,
-    borderWidth: 1.5,
-    marginTop: 4,
-  },
-  noSelBtnText: {
-    fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
-  },
+  root: { flex: 1, backgroundColor: C.bg },
+  body: { flex: 1, flexDirection: "row" },
+
+  // Sidebar
+  sidebar: { width: 210, backgroundColor: "rgba(18,22,24,1)", borderRightWidth: 1, borderRightColor: C.border },
+  sideHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 12, borderBottomWidth: 1, borderBottomColor: C.border },
+  logoRow: { flexDirection: "row", alignItems: "center", gap: 7 },
+  logoBox: { width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" },
+  logoText: { color: C.text, fontSize: 13, fontFamily: "Inter_700Bold" },
+  scanBtn: { width: 28, height: 28, borderRadius: 7, alignItems: "center", justifyContent: "center" },
+  sideLabel: { color: C.muted, fontSize: 9, fontFamily: "Inter_600SemiBold", letterSpacing: 1, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 6 },
+  emptyDrives: { paddingTop: 40, alignItems: "center", gap: 8 },
+  emptyDrivesTxt: { color: C.muted, fontSize: 11, fontFamily: "Inter_400Regular", textAlign: "center" },
+
+  // Device list card
+  listCard: { marginHorizontal: 8, borderRadius: 8, borderWidth: 1, padding: 10, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  listCardLeft: { flexDirection: "row", alignItems: "center", gap: 8, flex: 1, minWidth: 0 },
+  diskDot: { width: 10, height: 10, borderRadius: 5, position: "relative" },
+  diskPulse: { position: "absolute", width: 10, height: 10, borderRadius: 5, top: 0, left: 0 },
+  listCardName: { color: C.text, fontSize: 12, fontFamily: "Inter_600SemiBold" },
+  listCardMfr: { color: C.muted, fontSize: 10, fontFamily: "Inter_400Regular" },
+  listCardStatus: { paddingHorizontal: 5, paddingVertical: 2 },
+  listCardStatusTxt: { fontSize: 8, fontFamily: "Inter_700Bold", letterSpacing: 0.5 },
+
+  // Main panel
+  main: { flex: 1, padding: 16 },
+
+  // Hero row
+  heroRow: { flexDirection: "row", gap: 20, marginBottom: 16, alignItems: "flex-start" },
+  diskWrap: { alignItems: "center", gap: 8 },
+  diskStatus: { flexDirection: "row", alignItems: "center", gap: 5, borderWidth: 1, borderRadius: 5, paddingHorizontal: 8, paddingVertical: 3 },
+  diskStatusDot: { width: 6, height: 6, borderRadius: 3 },
+  diskStatusTxt: { fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 0.8 },
+
+  // Device info
+  deviceInfo: { flex: 1, gap: 6 },
+  deviceName: { color: C.text, fontSize: 20, fontFamily: "Inter_700Bold" },
+  deviceMfr: { color: C.muted, fontSize: 12, fontFamily: "Inter_400Regular" },
+  idGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 4 },
+  idCell: { minWidth: 80, gap: 2 },
+  idKey: { color: C.muted, fontSize: 9, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5, textTransform: "uppercase" },
+  idVal: { color: C.text, fontSize: 12, fontFamily: "Inter_600SemiBold" },
+  connectBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8, alignSelf: "flex-start", marginTop: 6 },
+  connectBtnTxt: { fontSize: 12, fontFamily: "Inter_700Bold", letterSpacing: 0.8 },
+
+  // Gauges column
+  gaugesCol: { flexDirection: "row", gap: 8, alignItems: "center" },
+
+  // Stats row
+  statsRow: { flexDirection: "row", gap: 8, marginBottom: 14 },
+  statCard: { flex: 1, backgroundColor: C.card, borderRadius: 8, borderWidth: 1, padding: 10, alignItems: "center", gap: 3 },
+  statVal: { fontSize: 20, fontFamily: "Inter_700Bold" },
+  statLabel: { color: C.muted, fontSize: 9, fontFamily: "Inter_500Medium", letterSpacing: 0.5, textTransform: "uppercase" },
+
+  // Recent packets
+  recentCard: { backgroundColor: C.card, borderRadius: 8, borderWidth: 1, borderColor: C.border, padding: 12, marginBottom: 12, gap: 6 },
+  recentTitle: { color: C.muted, fontSize: 9, fontFamily: "Inter_600SemiBold", letterSpacing: 1, marginBottom: 4 },
+  recentRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 8, paddingVertical: 4, borderRadius: 3 },
+  recentDir: { fontSize: 9, fontFamily: "Inter_700Bold", letterSpacing: 0.5, width: 18 },
+  recentTime: { color: C.muted, fontSize: 10, fontFamily: "Inter_400Regular" },
+  recentData: { flex: 1, color: C.text, fontSize: 11, fontFamily: "Inter_400Regular" },
+  recentBytes: { color: C.muted, fontSize: 9, fontFamily: "Inter_400Regular" },
+
+  // Error
+  errorBox: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(255,80,60,0.1)", borderRadius: 8, borderWidth: 1, borderColor: "rgba(255,80,60,0.3)", padding: 10 },
+  errorTxt: { color: C.red, fontSize: 12, fontFamily: "Inter_400Regular", flex: 1 },
+
+  // No selection
+  noSel: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12 },
+  noSelTitle: { color: C.text, fontSize: 18, fontFamily: "Inter_600SemiBold" },
+  noSelSub: { color: C.muted, fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center", maxWidth: 220 },
+  noSelBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 9 },
+  noSelBtnTxt: { fontSize: 12, fontFamily: "Inter_700Bold", letterSpacing: 0.8 },
 });

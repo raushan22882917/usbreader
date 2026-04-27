@@ -278,21 +278,22 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
   }
 
   function runDemoReadLoop(device: UsbDevice) {
-    const demoPayloads = [
-      "TEMP:23.4C HUM:58%",
-      "SENSOR_OK STATUS:IDLE",
-      "DATA:0xA1 0xB2 0x00 0xFF",
-      "HEARTBEAT:1",
-      "VOLTAGE:3.3V CURRENT:120mA",
-    ];
-    let idx = 0;
+    let tick = 0;
     const interval = setInterval(() => {
-      if (!readLoopActiveRef.current) {
-        clearInterval(interval);
-        return;
-      }
-      const raw = demoPayloads[idx % demoPayloads.length];
-      idx++;
+      if (!readLoopActiveRef.current) { clearInterval(interval); return; }
+      tick++;
+
+      // Rotate through different realistic USB serial payloads
+      const payloads = [
+        `STATUS:OK VCC:${(3.28 + Math.sin(tick * 0.3) * 0.05).toFixed(2)}V TEMP:${(23 + Math.sin(tick * 0.1) * 3).toFixed(1)}C`,
+        `RPM:${Math.round(800 + Math.sin(tick * 0.2) * 400)} CURR:${(12.4 + Math.sin(tick * 0.4) * 2).toFixed(1)}A SOC:${Math.max(10, Math.min(100, 78 - tick * 0.5)).toFixed(0)}%`,
+        `{"bms":{"soc":${Math.round(78 - tick * 0.3)},"pack_voltage_v":${(320 + Math.sin(tick * 0.1) * 10).toFixed(1)},"pack_current_a":${(15 + Math.sin(tick * 0.2) * 5).toFixed(1)},"pack_temp_c":${(28 + Math.sin(tick * 0.05) * 4).toFixed(1)}}}`,
+        `HEARTBEAT:${tick} UPTIME:${tick * 3}s OK`,
+        `DATA:${Array.from({length: 8}, () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join(" ")}`,
+        `MOTOR:RPM=${Math.round(1200 + Math.sin(tick * 0.15) * 300)} TEMP=${(45 + Math.sin(tick * 0.08) * 10).toFixed(0)}C LOAD=${Math.round(40 + Math.sin(tick * 0.2) * 20)}%`,
+      ];
+
+      const raw = payloads[tick % payloads.length];
       const packet: DataPacket = {
         id: generateId(),
         timestamp: new Date(),
@@ -307,7 +308,7 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
         savePackets(next);
         return next.slice(-200);
       });
-    }, 3000);
+    }, 2500);
   }
 
   async function runWebUsbReadLoop(device: UsbDevice) {

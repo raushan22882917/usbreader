@@ -11,7 +11,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import Svg, {
-  Path, Circle, Line, Defs, LinearGradient, Stop,
+  Path, Circle, ClipPath, Defs, LinearGradient, Stop,
   Text as SvgText,
 } from "react-native-svg";
 import { useUsb } from "@/context/UsbContext";
@@ -298,7 +298,7 @@ function BatteryIcon({ soc, size }: { soc: number; size: number }) {
           <Stop offset="0" stopColor={color} />
           <Stop offset="1" stopColor={soc > 60 ? "#3AB87A" : soc > 30 ? "#E6A800" : "#CC2A1A"} />
         </LinearGradient>
-        <clipPath id="bc"><Path d="M91,40 h330 v472 h-330 Z" /></clipPath>
+        <ClipPath id="bc"><Path d="M91,40 h330 v472 h-330 Z" /></ClipPath>
       </Defs>
       <Path d="M420.457,46.9v458.886c0,3.448-2.759,6.207-6.131,6.207H97.674c-3.372,0-6.131-2.759-6.131-6.207V46.9c0-3.449,2.759-6.207,6.131-6.207h68.051V6.207C165.725,2.835,168.484,0,171.932,0h168.136c3.449,0,6.207,2.835,6.207,6.207v34.485h68.051C417.698,40.693,420.457,43.451,420.457,46.9z"
         fill="rgba(30,34,36,1)" stroke="rgba(70,75,77,1)" strokeWidth={8} />

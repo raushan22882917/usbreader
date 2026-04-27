@@ -4,8 +4,8 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { router } from "expo-router";
 import { useUsb } from "@/context/UsbContext";
+import { AppHeader } from "@/components/AppHeader";
 import Svg, { Path, Circle, Defs, LinearGradient, Stop } from "react-native-svg";
 
 const C = {
@@ -142,18 +142,7 @@ export default function SettingsScreen() {
 
   return (
     <View style={s.root}>
-      {/* ── Top bar ── */}
-      <View style={s.topBar}>
-        <Pressable style={s.backBtn} onPress={() => router.push("/(tabs)/index" as any)}>
-          <MaterialCommunityIcons name="arrow-left" size={18} color={C.muted} />
-        </Pressable>
-        <MaterialCommunityIcons name="cog-outline" size={16} color={C.muted} />
-        <Text style={s.topTitle}>Settings</Text>
-        <View style={[s.connBadge, { backgroundColor: isConnected ? "rgba(110,220,161,0.1)" : "rgba(255,80,60,0.08)", borderColor: isConnected ? "rgba(110,220,161,0.4)" : "rgba(255,80,60,0.3)" }]}>
-          <MaterialCommunityIcons name="usb" size={11} color={isConnected ? C.green : C.red} />
-          <Text style={[s.connTxt, { color: isConnected ? C.green : C.red }]}>{isConnected ? "USB ON" : "USB OFF"}</Text>
-        </View>
-      </View>
+      <AppHeader title="Settings" icon="cog-outline" iconColor={C.muted} />
 
       <View style={s.body}>
         {/* ── LEFT SIDEBAR ── */}
@@ -269,12 +258,6 @@ export default function SettingsScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg, flexDirection: "column" },
 
-  topBar: { height: 44, flexDirection: "row", alignItems: "center", paddingHorizontal: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.panel },
-  backBtn: { width: 28, height: 28, borderRadius: 7, backgroundColor: C.card, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: C.border },
-  topTitle: { color: C.text, fontSize: 13, fontWeight: "700", flex: 1 },
-  connBadge: { flexDirection: "row", alignItems: "center", gap: 5, borderWidth: 1, borderRadius: 5, paddingHorizontal: 7, paddingVertical: 3 },
-  connDot: { width: 5, height: 5, borderRadius: 3 },
-  connTxt: { fontSize: 9, fontWeight: "700", letterSpacing: 0.5 },
 
   body: { flex: 1, flexDirection: "row" },
 

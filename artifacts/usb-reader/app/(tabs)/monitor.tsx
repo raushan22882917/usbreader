@@ -2,8 +2,8 @@ import React, { useRef, useState } from "react";
 import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { router } from "expo-router";
-import { useUsb, DataPacket } from "@/context/UsbContext";
+import { useUsb, type DataPacket } from "@/context/UsbContext";
+import { AppHeader } from "@/components/AppHeader";
 
 const C = {
   bg:     "rgba(21,25,27,1)",
@@ -133,36 +133,31 @@ export default function MonitorScreen() {
 
   return (
     <View style={s.root}>
-      {/* ── Top bar ── */}
-      <View style={s.topBar}>
-        <Pressable style={s.backBtn} onPress={() => router.push("/(tabs)/index" as any)}>
-          <MaterialCommunityIcons name="arrow-left" size={18} color={C.muted} />
-        </Pressable>
-        <MaterialCommunityIcons name="chart-timeline-variant" size={16} color={C.blue} />
-        <Text style={s.topTitle}>Packet Monitor</Text>
-
-        <View style={s.topStats}>
-          <View style={[s.statPill, { borderColor: "rgba(80,180,255,0.4)" }]}>
-            <MaterialCommunityIcons name="arrow-down-circle" size={11} color={C.blue} />
-            <Text style={[s.statTxt, { color: C.blue }]}>{rxCount}</Text>
+      <AppHeader
+        title="Packet Monitor"
+        icon="chart-timeline-variant"
+        iconColor={C.blue}
+        right={
+          <View style={s.headerExtras}>
+            <View style={[s.statPill, { borderColor: "rgba(80,180,255,0.4)" }]}>
+              <MaterialCommunityIcons name="arrow-down-circle" size={11} color={C.blue} />
+              <Text style={[s.statTxt, { color: C.blue }]}>{rxCount} RX</Text>
+            </View>
+            <View style={[s.statPill, { borderColor: "rgba(110,220,161,0.4)" }]}>
+              <MaterialCommunityIcons name="arrow-up-circle" size={11} color={C.green} />
+              <Text style={[s.statTxt, { color: C.green }]}>{txCount} TX</Text>
+            </View>
+            <Pressable style={s.clearBtn} onPress={() => { clearPackets(); setSelected(null); }}>
+              <MaterialCommunityIcons name="delete-outline" size={14} color={C.red} />
+              <Text style={s.clearTxt}>CLEAR</Text>
+            </Pressable>
+            <View style={[s.livePill, { backgroundColor: isConnected ? "rgba(110,220,161,0.1)" : "transparent", borderColor: isConnected ? "rgba(110,220,161,0.4)" : C.border }]}>
+              <View style={[s.liveDot, { backgroundColor: isConnected ? C.green : C.muted }]} />
+              <Text style={[s.liveTxt, { color: isConnected ? C.green : C.muted }]}>{isConnected ? "LIVE" : "IDLE"}</Text>
+            </View>
           </View>
-          <View style={[s.statPill, { borderColor: "rgba(110,220,161,0.4)" }]}>
-            <MaterialCommunityIcons name="arrow-up-circle" size={11} color={C.green} />
-            <Text style={[s.statTxt, { color: C.green }]}>{txCount}</Text>
-          </View>
-        </View>
-
-        <Pressable style={s.clearBtn} onPress={() => { clearPackets(); setSelected(null); }}>
-          <MaterialCommunityIcons name="delete-outline" size={16} color={C.red} />
-          <Text style={s.clearTxt}>CLEAR</Text>
-        </Pressable>
-
-        {/* Live indicator */}
-        <View style={[s.livePill, { backgroundColor: isConnected ? "rgba(110,220,161,0.1)" : C.card, borderColor: isConnected ? "rgba(110,220,161,0.4)" : C.border }]}>
-          <View style={[s.liveDot, { backgroundColor: isConnected ? C.green : C.muted }]} />
-          <Text style={[s.liveTxt, { color: isConnected ? C.green : C.muted }]}>{isConnected ? "LIVE" : "IDLE"}</Text>
-        </View>
-      </View>
+        }
+      />
 
       <View style={s.body}>
         {/* ── LEFT: Packet log ── */}
@@ -243,10 +238,7 @@ export default function MonitorScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg, flexDirection: "column" },
 
-  topBar: { height: 44, flexDirection: "row", alignItems: "center", paddingHorizontal: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.panel },
-  backBtn: { width: 28, height: 28, borderRadius: 7, backgroundColor: C.card, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: C.border },
-  topTitle: { color: C.text, fontSize: 13, fontWeight: "700", flex: 1 },
-  topStats: { flexDirection: "row", gap: 5 },
+  headerExtras: { flexDirection: "row", alignItems: "center", gap: 5 },
   statPill: { flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
   statTxt: { fontSize: 10, fontWeight: "700" },
   clearBtn: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(255,80,60,0.1)", borderRadius: 6, borderWidth: 1, borderColor: "rgba(255,80,60,0.4)", paddingHorizontal: 8, paddingVertical: 4 },

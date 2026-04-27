@@ -10,10 +10,10 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Feather } from "@expo/vector-icons";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as DocumentPicker from "expo-document-picker";
-import { GlobalStatusBar } from "@/components/StatusBar";
+import { AppHeader } from "@/components/AppHeader";
 
 const C = {
   bg: "rgba(21,25,27,1)",
@@ -147,7 +147,7 @@ function HexTable({
 
       {totalRows > VISIBLE_ROWS && (
         <View style={ht.truncNote}>
-          <Feather name="info" size={12} color={C.yellow} />
+          <MaterialCommunityIcons name="information-outline" size={12} color={C.yellow} />
           <Text style={ht.truncTxt}>
             Showing first {VISIBLE_ROWS * BYTES_PER_ROW} bytes of {bytes.length} total
           </Text>
@@ -321,7 +321,7 @@ export default function DecoderScreen() {
 
   return (
     <View style={[styles.root, { paddingLeft: leftPad, paddingRight: rightPad }]}>
-      <GlobalStatusBar />
+      <AppHeader title="BIN Decoder" icon="file-code-outline" iconColor={C.yellow} />
 
       <View style={styles.body}>
         {/* ── LEFT SIDEBAR ── */}
@@ -329,7 +329,7 @@ export default function DecoderScreen() {
           {/* Header */}
           <View style={styles.sideHead}>
             <View style={[styles.sideIcon, { backgroundColor: "rgba(255,200,50,0.18)" }]}>
-              <Feather name="file-text" size={14} color={C.yellow} />
+              <MaterialCommunityIcons name="file-document-outline" size={14} color={C.yellow} />
             </View>
             <View>
               <Text style={styles.sideTitle}>BIN Decoder</Text>
@@ -349,7 +349,7 @@ export default function DecoderScreen() {
             {loading
               ? <ActivityIndicator size="small" color={C.yellow} />
               : <>
-                <Feather name="upload" size={15} color={fileInfo ? C.green : C.yellow} />
+                <MaterialCommunityIcons name="upload" size={15} color={fileInfo ? C.green : C.yellow} />
                 <Text style={[styles.pickBtnTxt, { color: fileInfo ? C.green : C.yellow }]}>
                   {fileInfo ? "Load New File" : "Open .bin File"}
                 </Text>
@@ -361,7 +361,7 @@ export default function DecoderScreen() {
             <View style={styles.fileInfo}>
               <View style={styles.fileIconRow}>
                 <View style={[styles.fileIcon, { backgroundColor: "rgba(255,200,50,0.12)" }]}>
-                  <Feather name="file" size={20} color={C.yellow} />
+                  <MaterialCommunityIcons name="file-outline" size={20} color={C.yellow} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.fileName} numberOfLines={2}>{fileInfo.name}</Text>
@@ -391,7 +391,7 @@ export default function DecoderScreen() {
           {/* Error */}
           {error && (
             <View style={styles.errorBox}>
-              <Feather name="alert-triangle" size={12} color={C.red} />
+              <MaterialCommunityIcons name="alert-outline" size={12} color={C.red} />
               <Text style={styles.errorTxt}>{error}</Text>
             </View>
           )}
@@ -434,7 +434,7 @@ export default function DecoderScreen() {
                 autoCapitalize="characters"
               />
               <Pressable style={styles.jumpBtn} onPress={handleJump}>
-                <Feather name="arrow-right" size={12} color={C.blue} />
+                <MaterialCommunityIcons name="arrow-right" size={12} color={C.blue} />
               </Pressable>
             </View>
           </View>
@@ -450,7 +450,7 @@ export default function DecoderScreen() {
               {/* File header */}
               <View style={styles.hexFileHeader}>
                 <View style={styles.hexFileHeaderLeft}>
-                  <Feather name="file" size={12} color={C.yellow} />
+                  <MaterialCommunityIcons name="file-outline" size={12} color={C.yellow} />
                   <Text style={styles.hexFileHeaderName}>{fileInfo.name}</Text>
                 </View>
                 <Text style={styles.hexFileHeaderSize}>{formatSize(fileInfo.size)} · {fileInfo.size} bytes</Text>
@@ -470,7 +470,7 @@ export default function DecoderScreen() {
               {/* Drop zone visual */}
               <View style={styles.dropZone}>
                 <View style={styles.dropZoneInner}>
-                  <Feather name="upload-cloud" size={36} color={C.muted} />
+                  <MaterialCommunityIcons name="cloud-upload-outline" size={36} color={C.muted} />
                   <Text style={styles.dropTitle}>No File Loaded</Text>
                   <Text style={styles.dropSub}>Open any binary file — .bin, .hex, .fw, .img, .rom, .elf, .bin</Text>
                   <Pressable
@@ -481,7 +481,7 @@ export default function DecoderScreen() {
                     {loading
                       ? <ActivityIndicator size="small" color={C.yellow} />
                       : <>
-                        <Feather name="folder" size={14} color={C.yellow} />
+                        <MaterialCommunityIcons name="folder-open-outline" size={14} color={C.yellow} />
                         <Text style={styles.dropBtnTxt}>Open File</Text>
                       </>}
                   </Pressable>
@@ -491,14 +491,14 @@ export default function DecoderScreen() {
               {/* Feature list */}
               <View style={styles.featureGrid}>
                 {[
-                  { icon: "code" as const, label: "Hex View", desc: "16-byte rows with offset column", color: C.blue },
-                  { icon: "align-left" as const, label: "ASCII Decode", desc: "View printable characters inline", color: C.green },
-                  { icon: "cpu" as const, label: "Binary Mode", desc: "Bit-level binary representation", color: C.yellow },
-                  { icon: "bar-chart-2" as const, label: "Byte Stats", desc: "Entropy & frequency analysis", color: C.red },
+                  { icon: "code-braces" as const,      label: "Hex View",     desc: "16-byte rows with offset column",  color: C.blue },
+                  { icon: "text-recognition" as const,  label: "ASCII Decode", desc: "View printable characters inline",  color: C.green },
+                  { icon: "chip" as const,              label: "Binary Mode",  desc: "Bit-level binary representation",   color: C.yellow },
+                  { icon: "chart-bar" as const,         label: "Byte Stats",   desc: "Entropy & frequency analysis",      color: C.red },
                 ].map(({ icon, label, desc, color }) => (
                   <View key={label} style={[styles.featureCard, { borderColor: `${color}30` }]}>
                     <View style={[styles.featureIcon, { backgroundColor: `${color}15` }]}>
-                      <Feather name={icon} size={16} color={color} />
+                      <MaterialCommunityIcons name={icon} size={16} color={color} />
                     </View>
                     <Text style={styles.featureLabel}>{label}</Text>
                     <Text style={styles.featureDesc}>{desc}</Text>

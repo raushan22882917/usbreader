@@ -4,8 +4,10 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { router } from "expo-router";
 import { useUsb } from "@/context/UsbContext";
+import { AppHeader } from "@/components/AppHeader";
+
+// KeyboardAwareScrollView removed — use standard ScrollView
 
 const C = {
   bg:     "rgba(21,25,27,1)",
@@ -81,7 +83,7 @@ const tx = StyleSheet.create({
 });
 
 export default function WriteScreen() {
-  const { sendData, connectionStatus, packets } = useUsb();
+  const { writeData, connectionStatus, packets } = useUsb();
   const [compose, setCompose] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [txLog, setTxLog] = useState<{ data: string; time: string }[]>([]);
@@ -95,7 +97,7 @@ export default function WriteScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsSending(true);
     try {
-      await sendData(data);
+      await writeData(data);
       setTxLog((prev) => [{ data, time: new Date().toLocaleTimeString([], { hour12: false }) }, ...prev.slice(0, 49)]);
     } finally {
       setIsSending(false);
@@ -110,19 +112,19 @@ export default function WriteScreen() {
 
   return (
     <View style={s.root}>
-      {/* ── Top bar ── */}
-      <View style={s.topBar}>
-        <Pressable style={s.backBtn} onPress={() => router.push("/(tabs)/index" as any)}>
-          <MaterialCommunityIcons name="arrow-left" size={18} color={C.muted} />
-        </Pressable>
-        <MaterialCommunityIcons name="console-line" size={16} color={C.green} />
-        <Text style={s.topTitle}>Write Terminal</Text>
-        <View style={[s.connBadge, { backgroundColor: isConnected ? "rgba(110,220,161,0.1)" : "rgba(255,80,60,0.1)", borderColor: isConnected ? "rgba(110,220,161,0.4)" : "rgba(255,80,60,0.4)" }]}>
-          <View style={[s.connDot, { backgroundColor: isConnected ? C.green : C.red }]} />
-          <Text style={[s.connTxt, { color: isConnected ? C.green : C.red }]}>{isConnected ? "CONNECTED" : "OFFLINE"}</Text>
-        </View>
-        <Text style={s.txCount}>{txPkts.length} TX</Text>
-      </View>
+      <AppHeader
+        title="Write Terminal"
+        icon="console-line"
+        iconColor={C.green}
+        right={
+          <View style={s.headerExtras}>
+            <View style={[s.statPill, { borderColor: isConnected ? "rgba(110,220,161,0.35)" : "rgba(255,80,60,0.3)" }]}>
+              <MaterialCommunityIcons name="arrow-up-circle" size={11} color={isConnected ? C.green : C.red} />
+              <Text style={[s.statTxt, { color: isConnected ? C.green : C.red }]}>{txPkts.length} TX</Text>
+            </View>
+          </View>
+        }
+      />
 
       <View style={s.body}>
         {/* ── LEFT: Quick commands ── */}
@@ -224,13 +226,9 @@ export default function WriteScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg, flexDirection: "column" },
 
-  topBar: { height: 44, flexDirection: "row", alignItems: "center", paddingHorizontal: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.panel },
-  backBtn: { width: 28, height: 28, borderRadius: 7, backgroundColor: C.card, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: C.border },
-  topTitle: { color: C.text, fontSize: 13, fontWeight: "700", flex: 1 },
-  connBadge: { flexDirection: "row", alignItems: "center", gap: 5, borderWidth: 1, borderRadius: 5, paddingHorizontal: 7, paddingVertical: 3 },
-  connDot: { width: 5, height: 5, borderRadius: 3 },
-  connTxt: { fontSize: 9, fontWeight: "700", letterSpacing: 0.5 },
-  txCount: { color: C.green, fontSize: 10, fontWeight: "700" },
+  headerExtras: { flexDirection: "row", alignItems: "center", gap: 5 },
+  statPill: { flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
+  statTxt: { fontSize: 10, fontWeight: "700" },
 
   body: { flex: 1, flexDirection: "row" },
 

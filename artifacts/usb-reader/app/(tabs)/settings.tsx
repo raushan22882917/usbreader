@@ -211,7 +211,7 @@ export default function SettingsScreen() {
         <ScrollView style={s.main} contentContainerStyle={s.mainContent} showsVerticalScrollIndicator={false}>
 
           {/* Device Info */}
-          <SectionCard title="Device Information" icon="hard-drive" color={C.blue}>
+          <SectionCard title="Device Information" icon="chip" color={C.blue}>
             <InfoRow icon="identifier" label="Device Name" value={selectedDevice?.name ?? "—"} />
             <InfoRow icon="factory" label="Manufacturer" value={selectedDevice?.manufacturerName ?? "—"} />
             <InfoRow icon="barcode" label="Serial Number" value={selectedDevice?.serialNumber ?? "—"} />

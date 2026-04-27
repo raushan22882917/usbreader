@@ -1,0 +1,27 @@
+kind = "mobile"
+previewPath = "/"
+title = "USB Reader & Writer"
+version = "1.0.0"
+id = "artifacts/usb-reader"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/" ]
+localPort = 22980
+
+[services.development]
+run = "pnpm --filter @workspace/usb-reader run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/usb-reader", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/usb-reader", "run", "serve" ]
+
+[services.env]
+PORT = "22980"
+BASE_PATH = "/"

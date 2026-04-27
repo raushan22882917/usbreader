@@ -1,0 +1,8 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "wiuK4IrKJ_3FoVK-bi0hw"
+uri = "file://artifacts/usb-reader/assets/images/icon.png"
+type = "image"
+title = "usb reader app icon"

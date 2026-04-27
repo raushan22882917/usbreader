@@ -5,7 +5,7 @@ import { Icon, Label, NativeTabs } from "expo-router/unstable-native-tabs";
 import { SymbolView } from "expo-symbols";
 import { Feather } from "@expo/vector-icons";
 import React from "react";
-import { Platform, StyleSheet, View, useColorScheme } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import { useColors } from "@/hooks/useColors";
 
 function NativeTabLayout() {
@@ -33,8 +33,6 @@ function NativeTabLayout() {
 
 function ClassicTabLayout() {
   const colors = useColors();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
   const isIOS = Platform.OS === "ios";
   const isWeb = Platform.OS === "web";
 
@@ -46,27 +44,23 @@ function ClassicTabLayout() {
         headerShown: false,
         tabBarStyle: {
           position: "absolute",
-          backgroundColor: isIOS ? "transparent" : colors.background,
-          borderTopWidth: isWeb ? 1 : 0,
+          backgroundColor: colors.navBackground,
+          borderTopWidth: 1,
           borderTopColor: colors.border,
           elevation: 0,
-          ...(isWeb ? { height: 84 } : {}),
+          height: isWeb ? 54 : 52,
+        },
+        tabBarLabelStyle: {
+          fontSize: 10,
+          fontFamily: "Inter_500Medium",
+          marginBottom: isWeb ? 4 : 0,
         },
         tabBarBackground: () =>
           isIOS ? (
-            <BlurView
-              intensity={100}
-              tint={isDark ? "dark" : "light"}
-              style={StyleSheet.absoluteFill}
-            />
-          ) : isWeb ? (
-            <View
-              style={[
-                StyleSheet.absoluteFill,
-                { backgroundColor: colors.background },
-              ]}
-            />
-          ) : null,
+            <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
+          ) : (
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: colors.navBackground }]} />
+          ),
       }}
     >
       <Tabs.Screen
@@ -75,9 +69,9 @@ function ClassicTabLayout() {
           title: "Devices",
           tabBarIcon: ({ color }) =>
             isIOS ? (
-              <SymbolView name="cable.connector.horizontal" tintColor={color} size={24} />
+              <SymbolView name="cable.connector.horizontal" tintColor={color} size={22} />
             ) : (
-              <Feather name="hard-drive" size={22} color={color} />
+              <Feather name="hard-drive" size={20} color={color} />
             ),
         }}
       />
@@ -87,9 +81,9 @@ function ClassicTabLayout() {
           title: "Monitor",
           tabBarIcon: ({ color }) =>
             isIOS ? (
-              <SymbolView name="waveform" tintColor={color} size={24} />
+              <SymbolView name="waveform" tintColor={color} size={22} />
             ) : (
-              <Feather name="activity" size={22} color={color} />
+              <Feather name="activity" size={20} color={color} />
             ),
         }}
       />
@@ -99,9 +93,9 @@ function ClassicTabLayout() {
           title: "Write",
           tabBarIcon: ({ color }) =>
             isIOS ? (
-              <SymbolView name="square.and.pencil" tintColor={color} size={24} />
+              <SymbolView name="square.and.pencil" tintColor={color} size={22} />
             ) : (
-              <Feather name="edit-3" size={22} color={color} />
+              <Feather name="edit-3" size={20} color={color} />
             ),
         }}
       />
@@ -111,9 +105,9 @@ function ClassicTabLayout() {
           title: "Settings",
           tabBarIcon: ({ color }) =>
             isIOS ? (
-              <SymbolView name="gearshape" tintColor={color} size={24} />
+              <SymbolView name="gearshape" tintColor={color} size={22} />
             ) : (
-              <Feather name="settings" size={22} color={color} />
+              <Feather name="settings" size={20} color={color} />
             ),
         }}
       />

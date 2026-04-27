@@ -4,6 +4,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb, type DataPacket } from "@/context/UsbContext";
 import { AppHeader } from "@/components/AppHeader";
+import { BottomNav } from "@/components/BottomNav";
 
 const C = {
   bg:     "rgba(21,25,27,1)",
@@ -231,6 +232,7 @@ export default function MonitorScreen() {
           </View>
         </View>
       </View>
+      <BottomNav />
     </View>
   );
 }

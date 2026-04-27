@@ -6,6 +6,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb } from "@/context/UsbContext";
 import { AppHeader } from "@/components/AppHeader";
+import { BottomNav } from "@/components/BottomNav";
 
 // KeyboardAwareScrollView removed — use standard ScrollView
 
@@ -219,6 +220,7 @@ export default function WriteScreen() {
           </View>
         </View>
       </View>
+      <BottomNav />
     </View>
   );
 }

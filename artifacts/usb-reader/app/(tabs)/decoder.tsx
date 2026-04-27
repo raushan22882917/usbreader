@@ -14,6 +14,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as DocumentPicker from "expo-document-picker";
 import { AppHeader } from "@/components/AppHeader";
+import { BottomNav } from "@/components/BottomNav";
 
 const C = {
   bg: "rgba(21,25,27,1)",
@@ -522,6 +523,7 @@ export default function DecoderScreen() {
           </View>
         </View>
       </View>
+      <BottomNav />
     </View>
   );
 }

@@ -6,6 +6,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb } from "@/context/UsbContext";
 import { AppHeader } from "@/components/AppHeader";
+import { BottomNav } from "@/components/BottomNav";
 import Svg, { Path, Circle, Defs, LinearGradient, Stop } from "react-native-svg";
 
 const C = {
@@ -251,6 +252,7 @@ export default function SettingsScreen() {
 
         </ScrollView>
       </View>
+      <BottomNav />
     </View>
   );
 }

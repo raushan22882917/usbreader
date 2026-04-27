@@ -1,8 +1,7 @@
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import { router, usePathname } from "expo-router";
+import { Link, usePathname } from "expo-router";
 import { useUsb } from "@/context/UsbContext";
 
 type MCIcon = React.ComponentProps<typeof MaterialCommunityIcons>["name"];
@@ -17,22 +16,22 @@ const C = {
   yellow: "#FFC832",
   red:    "#FF503C",
   blue:   "#50B4FF",
-  orange: "#FF9811",
 };
 
-interface TabItem {
+interface TabDef {
   icon: MCIcon;
   label: string;
-  route: string;
+  href: string;
   color: string;
+  isHome?: boolean;
 }
 
-const TABS: TabItem[] = [
-  { icon: "chart-timeline-variant", label: "Monitor",  route: "/(tabs)/monitor",  color: C.blue },
-  { icon: "console-line",           label: "Write",    route: "/(tabs)/write",    color: C.green },
-  { icon: "home",                   label: "Home",     route: "/(tabs)/index",    color: C.green },
-  { icon: "file-code-outline",      label: "Decoder",  route: "/(tabs)/decoder",  color: C.yellow },
-  { icon: "cog-outline",            label: "Settings", route: "/(tabs)/settings", color: C.muted },
+const TABS: TabDef[] = [
+  { icon: "chart-timeline-variant", label: "Monitor",  href: "/monitor",  color: C.blue },
+  { icon: "console-line",           label: "Write",    href: "/write",    color: C.green },
+  { icon: "home",                   label: "Home",     href: "/",         color: C.green, isHome: true },
+  { icon: "file-code-outline",      label: "Decoder",  href: "/decoder",  color: C.yellow },
+  { icon: "cog-outline",            label: "Settings", href: "/settings", color: C.muted },
 ];
 
 export function BottomNav() {
@@ -44,47 +43,51 @@ export function BottomNav() {
   return (
     <View style={s.bar}>
       {TABS.map((tab) => {
-        const isActive = pathname === tab.route || (tab.route === "/(tabs)/index" && pathname === "/");
-        const isHome = tab.route === "/(tabs)/index";
+        const isActive =
+          tab.isHome
+            ? pathname === "/" || pathname === ""
+            : pathname === tab.href;
 
         return (
-          <Pressable
-            key={tab.route}
-            style={[
-              s.tab,
-              {
-                backgroundColor: isActive
-                  ? isHome
-                    ? "rgba(110,220,161,0.12)"
-                    : `${tab.color}10`
-                  : "transparent",
-                borderColor: isActive ? `${tab.color}45` : C.border,
-              },
-            ]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push(tab.route as any);
-            }}
-          >
-            <View style={s.iconWrap}>
-              <MaterialCommunityIcons
-                name={tab.icon}
-                size={18}
-                color={isActive ? tab.color : C.muted}
-              />
-              {/* Badge for monitor tab — shows packet count */}
-              {tab.route === "/(tabs)/monitor" && rxCount > 0 && (
-                <View style={s.badge}>
-                  <Text style={s.badgeTxt}>{rxCount > 99 ? "99+" : rxCount}</Text>
-                </View>
-              )}
-              {/* USB dot for home */}
-              {isHome && (
-                <View style={[s.usbDot, { backgroundColor: isConnected ? C.green : C.dim }]} />
-              )}
+          <Link key={tab.href} href={tab.href as any} style={s.tabLink}>
+            <View
+              style={[
+                s.tab,
+                {
+                  backgroundColor: isActive
+                    ? `${tab.color}18`
+                    : "transparent",
+                  borderColor: isActive ? `${tab.color}50` : C.border,
+                },
+              ]}
+            >
+              <View style={s.iconWrap}>
+                <MaterialCommunityIcons
+                  name={tab.icon}
+                  size={18}
+                  color={isActive ? tab.color : C.muted}
+                />
+                {/* Packet count badge on Monitor */}
+                {tab.href === "/monitor" && rxCount > 0 && (
+                  <View style={s.badge}>
+                    <Text style={s.badgeTxt}>{rxCount > 99 ? "99+" : rxCount}</Text>
+                  </View>
+                )}
+                {/* USB status dot on Home */}
+                {tab.isHome && (
+                  <View
+                    style={[
+                      s.usbDot,
+                      { backgroundColor: isConnected ? C.green : C.dim },
+                    ]}
+                  />
+                )}
+              </View>
+              <Text style={[s.label, { color: isActive ? tab.color : C.muted }]}>
+                {tab.label}
+              </Text>
             </View>
-            <Text style={[s.label, { color: isActive ? tab.color : C.muted }]}>{tab.label}</Text>
-          </Pressable>
+          </Link>
         );
       })}
     </View>
@@ -94,13 +97,17 @@ export function BottomNav() {
 const s = StyleSheet.create({
   bar: {
     flexDirection: "row",
-    height: 58,
+    height: 60,
     backgroundColor: C.panel,
     borderTopWidth: 1,
     borderTopColor: C.border,
     paddingHorizontal: 6,
-    paddingVertical: 4,
+    paddingVertical: 5,
     gap: 4,
+  },
+  tabLink: {
+    flex: 1,
+    textDecorationLine: "none",
   },
   tab: {
     flex: 1,

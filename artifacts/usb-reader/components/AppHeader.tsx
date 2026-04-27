@@ -29,7 +29,7 @@ interface AppHeaderProps {
 export function AppHeader({ title, icon = "circle-small", iconColor = C.muted, right }: AppHeaderProps) {
   const {
     selectedDevice, connectionStatus, isScanning, isConnecting,
-    scanForDevices, connectDevice, disconnectDevice, devices,
+    quickConnect, disconnectDevice,
   } = useUsb();
 
   const isConnected = connectionStatus === "connected";
@@ -39,10 +39,8 @@ export function AppHeader({ title, icon = "circle-small", iconColor = C.muted, r
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     if (isConnected) {
       disconnectDevice();
-    } else if (devices.length > 0) {
-      connectDevice(devices[0]);
     } else {
-      scanForDevices();
+      quickConnect();
     }
   };
 
@@ -51,7 +49,7 @@ export function AppHeader({ title, icon = "circle-small", iconColor = C.muted, r
       {/* Back button */}
       <Pressable
         style={s.backBtn}
-        onPress={() => { Haptics.selectionAsync(); router.push("/(tabs)/index" as any); }}
+        onPress={() => { Haptics.selectionAsync(); router.push("/" as any); }}
       >
         <MaterialCommunityIcons name="arrow-left" size={18} color={C.muted} />
       </Pressable>

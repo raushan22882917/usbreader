@@ -275,7 +275,7 @@ const sr = StyleSheet.create({
 
 // ─── MAIN DASHBOARD ──────────────────────────────────────────
 export default function DashboardScreen() {
-  const { devices, selectedDevice, connectionStatus, packets, scanForDevices, connectDevice, disconnectDevice } = useUsb();
+  const { selectedDevice, connectionStatus, packets, quickConnect, disconnectDevice } = useUsb();
   const parsed = useParsedUsbData(packets);
   const isConnected = connectionStatus === "connected";
 
@@ -313,8 +313,7 @@ export default function DashboardScreen() {
   const handleToggleUsb = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     if (isConnected) disconnectDevice();
-    else if (devices.length > 0) connectDevice(devices[0]);
-    else scanForDevices();
+    else quickConnect();
   };
 
   // Derive display values from parsed real data

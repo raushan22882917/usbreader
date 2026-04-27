@@ -43,6 +43,7 @@ interface UsbContextType {
   setViewMode: (mode: "text" | "hex" | "ascii") => void;
   scanForDevices: () => Promise<void>;
   connectDevice: (device: UsbDevice) => Promise<void>;
+  quickConnect: () => Promise<void>;
   disconnectDevice: () => void;
   writeData: (data: string) => Promise<void>;
   clearPackets: () => void;
@@ -344,6 +345,29 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const quickConnect = useCallback(async () => {
+    if (connectionStatus === "connected") return;
+    const DEMO: UsbDevice = {
+      id: "demo-quick",
+      name: "Arduino Uno",
+      vendorId: 0x2341,
+      productId: 0x0043,
+      manufacturerName: "Arduino LLC",
+      productName: "Arduino Uno",
+      serialNumber: "SN-8472",
+      connected: false,
+      platform: Platform.OS as "android" | "ios" | "web",
+    };
+    let target: UsbDevice;
+    if (devices.length > 0) {
+      target = devices[0];
+    } else {
+      target = DEMO;
+      setDevices([DEMO]);
+    }
+    await connectDevice(target);
+  }, [devices, connectionStatus, connectDevice]);
+
   const disconnectDevice = useCallback(() => {
     readLoopActiveRef.current = false;
     if (Platform.OS === "web" && webUsbDeviceRef.current) {
@@ -403,6 +427,7 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
         setViewMode,
         scanForDevices,
         connectDevice,
+        quickConnect,
         disconnectDevice,
         writeData,
         clearPackets,

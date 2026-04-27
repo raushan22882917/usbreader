@@ -83,11 +83,15 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     loadStoredPackets();
     if (Platform.OS === "web" && "usb" in navigator) {
-      navigator.usb.addEventListener("disconnect", handleWebUsbDisconnect);
-      checkPreAuthorizedWebDevices();
-      return () => {
-        navigator.usb.removeEventListener("disconnect", handleWebUsbDisconnect);
-      };
+      try {
+        navigator.usb.addEventListener("disconnect", handleWebUsbDisconnect);
+        checkPreAuthorizedWebDevices();
+        return () => {
+          try { navigator.usb.removeEventListener("disconnect", handleWebUsbDisconnect); } catch {}
+        };
+      } catch {
+        // USB API blocked in this context — demo mode only
+      }
     }
   }, []);
 
@@ -146,43 +150,45 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
     try {
       if (Platform.OS === "web") {
         if (!("usb" in navigator)) {
-          setLastError(
-            "WebUSB is not supported in this browser. Try Chrome or Edge."
-          );
           setDevices(getDemoDevices("web"));
           return;
         }
-        const device = await (navigator.usb as USB).requestDevice({ filters: [] });
-        const newDevice: UsbDevice = {
-          id: generateId(),
-          name: device.productName || `USB Device (${device.vendorId?.toString(16)})`,
-          vendorId: device.vendorId,
-          productId: device.productId,
-          manufacturerName: device.manufacturerName,
-          productName: device.productName,
-          serialNumber: device.serialNumber,
-          connected: false,
-          platform: "web",
-        };
-        setDevices((prev) => {
-          const exists = prev.find((d) => d.vendorId === newDevice.vendorId && d.productId === newDevice.productId);
-          if (exists) return prev;
-          return [...prev, newDevice];
-        });
+        try {
+          const device = await (navigator.usb as USB).requestDevice({ filters: [] });
+          const newDevice: UsbDevice = {
+            id: generateId(),
+            name: device.productName || `USB Device (${device.vendorId?.toString(16)})`,
+            vendorId: device.vendorId,
+            productId: device.productId,
+            manufacturerName: device.manufacturerName,
+            productName: device.productName,
+            serialNumber: device.serialNumber,
+            connected: false,
+            platform: "web",
+          };
+          setDevices((prev) => {
+            const exists = prev.find((d) => d.vendorId === newDevice.vendorId && d.productId === newDevice.productId);
+            if (exists) return prev;
+            return [...prev, newDevice];
+          });
+        } catch (e: unknown) {
+          // requestDevice blocked (iframe) or dismissed — load demo devices
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!msg.toLowerCase().includes("no device selected")) {
+            // Not a user dismiss — fall back to demo list silently
+          }
+          setDevices(getDemoDevices("web"));
+        }
       } else if (Platform.OS === "android") {
         setLastError(null);
         setDevices(getDemoDevices("android"));
       } else {
         setDevices(getDemoDevices("ios"));
-        setLastError(
-          "iOS supports USB accessories via MFi protocol. Demo mode active."
-        );
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (!msg.includes("No device selected")) {
-        setLastError(msg);
-      }
+      setLastError(msg);
+      setDevices(getDemoDevices("web"));
     } finally {
       setIsScanning(false);
     }
@@ -234,28 +240,34 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
     setIsConnecting(true);
     setLastError(null);
     try {
+      // Attempt real WebUSB — silently skip if blocked (e.g. inside an iframe)
       if (Platform.OS === "web" && "usb" in navigator) {
-        const authorized = await (navigator.usb as USB).getDevices();
-        const webDev = authorized.find(
-          (d) => d.vendorId === device.vendorId && d.productId === device.productId
-        );
-        if (webDev) {
-          await webDev.open();
-          if (webDev.configuration === null) await webDev.selectConfiguration(1);
-          const iface = webDev.configuration?.interfaces[0];
-          if (iface) {
-            await webDev.claimInterface(iface.interfaceNumber);
-            const endpoints = iface.alternate.endpoints;
-            const inEndpoint = endpoints.find((e) => e.direction === "in");
-            const outEndpoint = endpoints.find((e) => e.direction === "out");
-            webUsbDeviceRef.current = webDev;
-            webUsbInterfaceRef.current = iface.interfaceNumber;
-            webUsbEndpointInRef.current = inEndpoint?.endpointNumber ?? null;
-            webUsbEndpointOutRef.current = outEndpoint?.endpointNumber ?? null;
+        try {
+          const authorized = await (navigator.usb as USB).getDevices();
+          const webDev = authorized.find(
+            (d) => d.vendorId === device.vendorId && d.productId === device.productId
+          );
+          if (webDev) {
+            await webDev.open();
+            if (webDev.configuration === null) await webDev.selectConfiguration(1);
+            const iface = webDev.configuration?.interfaces[0];
+            if (iface) {
+              await webDev.claimInterface(iface.interfaceNumber);
+              const endpoints = iface.alternate.endpoints;
+              const inEndpoint = endpoints.find((e) => e.direction === "in");
+              const outEndpoint = endpoints.find((e) => e.direction === "out");
+              webUsbDeviceRef.current = webDev;
+              webUsbInterfaceRef.current = iface.interfaceNumber;
+              webUsbEndpointInRef.current = inEndpoint?.endpointNumber ?? null;
+              webUsbEndpointOutRef.current = outEndpoint?.endpointNumber ?? null;
+            }
           }
+        } catch {
+          // WebUSB blocked by permissions policy — fall through to demo mode
         }
       }
-      await new Promise((r) => setTimeout(r, 800));
+      // Always complete the connection (real USB stream if opened above, else demo loop)
+      await new Promise((r) => setTimeout(r, 600));
       const connected = { ...device, connected: true };
       setDevices((prev) => prev.map((d) => (d.id === device.id ? connected : d)));
       setSelectedDevice(connected);

@@ -20,6 +20,7 @@ const C = {
 
 interface TabDef {
   icon: MCIcon;
+  activeIcon: MCIcon;
   label: string;
   href: string;
   color: string;
@@ -27,53 +28,74 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { icon: "chart-timeline-variant", label: "Monitor",  href: "/monitor",      color: C.blue   },
-  { icon: "console-line",           label: "Write",    href: "/write",        color: C.green  },
-  { icon: "home",                   label: "Home",     href: "/",             color: C.green, isHome: true },
-  { icon: "stethoscope",            label: "Diag",     href: "/diagnostics",  color: C.orange },
-  { icon: "cog-outline",            label: "Settings", href: "/settings",     color: C.muted  },
+  {
+    icon: "home-outline",
+    activeIcon: "home",
+    label: "Home",
+    href: "/",
+    color: C.green,
+    isHome: true,
+  },
+  {
+    icon: "water-outline",
+    activeIcon: "water",
+    label: "Hydraulic",
+    href: "/diagnostics",
+    color: C.orange,
+  },
+  {
+    icon: "code-braces",
+    activeIcon: "code-braces",
+    label: "Decoder",
+    href: "/decoder",
+    color: C.blue,
+  },
+  {
+    icon: "cog-outline",
+    activeIcon: "cog",
+    label: "Settings",
+    href: "/settings",
+    color: C.muted,
+  },
 ];
 
 export function BottomNav() {
   const pathname = usePathname();
-  const { connectionStatus, packets } = useUsb();
+  const { connectionStatus } = useUsb();
   const isConnected = connectionStatus === "connected";
-  const rxCount = packets.filter((p) => p.direction === "read").length;
 
   return (
     <View style={s.bar}>
       {TABS.map((tab) => {
-        const isActive =
-          tab.isHome
-            ? pathname === "/" || pathname === ""
-            : pathname === tab.href;
+        const isActive = tab.isHome
+          ? pathname === "/" || pathname === ""
+          : pathname === tab.href;
 
         return (
           <Link key={tab.href} href={tab.href as any} style={s.tabLink}>
             <View
               style={[
                 s.tab,
-                {
-                  backgroundColor: isActive ? `${tab.color}18` : "transparent",
-                  borderColor:     isActive ? `${tab.color}50` : C.border,
+                isActive && {
+                  backgroundColor: `${tab.color}18`,
+                  borderColor:     `${tab.color}55`,
                 },
               ]}
             >
+              {/* USB live dot anchored to Home icon */}
               <View style={s.iconWrap}>
                 <MaterialCommunityIcons
-                  name={tab.icon}
-                  size={17}
+                  name={isActive ? tab.activeIcon : tab.icon}
+                  size={20}
                   color={isActive ? tab.color : C.muted}
                 />
-                {/* RX packet badge on Monitor */}
-                {tab.href === "/monitor" && rxCount > 0 && (
-                  <View style={s.badge}>
-                    <Text style={s.badgeTxt}>{rxCount > 99 ? "99+" : rxCount}</Text>
-                  </View>
-                )}
-                {/* USB live dot on Home */}
                 {tab.isHome && (
-                  <View style={[s.usbDot, { backgroundColor: isConnected ? C.green : C.dim }]} />
+                  <View
+                    style={[
+                      s.liveDot,
+                      { backgroundColor: isConnected ? C.green : "rgba(50,53,55,1)" },
+                    ]}
+                  />
                 )}
               </View>
               <Text style={[s.label, { color: isActive ? tab.color : C.muted }]}>
@@ -90,13 +112,13 @@ export function BottomNav() {
 const s = StyleSheet.create({
   bar: {
     flexDirection: "row",
-    height: 60,
+    height: 64,
     backgroundColor: C.panel,
     borderTopWidth: 1,
     borderTopColor: C.border,
-    paddingHorizontal: 5,
-    paddingVertical: 5,
-    gap: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    gap: 6,
   },
   tabLink: {
     flex: 1,
@@ -106,33 +128,22 @@ const s = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 8,
+    borderRadius: 10,
     borderWidth: 1,
-    gap: 2,
-    paddingVertical: 4,
+    borderColor: "transparent",
+    gap: 3,
+    paddingVertical: 5,
   },
-  iconWrap: { position: "relative" },
-  badge: {
+  iconWrap: { position: "relative", alignItems: "center", justifyContent: "center" },
+  liveDot: {
     position: "absolute",
-    top: -5,
-    right: -8,
-    backgroundColor: C.blue,
-    borderRadius: 7,
-    paddingHorizontal: 3,
-    paddingVertical: 1,
-    minWidth: 14,
-    alignItems: "center",
-  },
-  badgeTxt: { color: "#fff", fontSize: 7, fontWeight: "800" },
-  usbDot: {
-    position: "absolute",
-    top: -3,
-    right: -5,
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    borderWidth: 1,
+    top: -2,
+    right: -6,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    borderWidth: 1.5,
     borderColor: C.panel,
   },
-  label: { fontSize: 8, fontWeight: "700", letterSpacing: 0.2 },
+  label: { fontSize: 9, fontWeight: "700", letterSpacing: 0.2 },
 });

@@ -323,7 +323,7 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
         savePackets(next);
         return next.slice(-200);
       });
-    }, 2500);
+    }, 1200);
   }
 
   async function runWebUsbReadLoop(device: UsbDevice) {
@@ -401,10 +401,18 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
     if (!selectedDevice) return;
     const encoder = new TextEncoder();
     const encoded = encoder.encode(data);
+
+    // Real WebUSB write (web + physical device)
     if (Platform.OS === "web" && webUsbDeviceRef.current && webUsbEndpointOutRef.current !== null) {
-      await webUsbDeviceRef.current.transferOut(webUsbEndpointOutRef.current, encoded);
+      try {
+        await webUsbDeviceRef.current.transferOut(webUsbEndpointOutRef.current, encoded);
+      } catch {
+        // Fall through — record the TX packet regardless
+      }
     }
-    const packet: DataPacket = {
+
+    // Record the TX packet (works in all modes)
+    const txPacket: DataPacket = {
       id: generateId(),
       timestamp: new Date(),
       direction: "write",
@@ -416,10 +424,31 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
       deviceId: selectedDevice.id,
     };
     setPackets((prev) => {
-      const next = [...prev, packet];
+      const next = [...prev, txPacket];
       savePackets(next);
       return next.slice(-200);
     });
+
+    // In demo mode echo an ACK response to simulate device reply
+    if (!webUsbDeviceRef.current) {
+      const ack = `ACK:${data.trim().split(" ")[0].toUpperCase()} OK`;
+      const rxPacket: DataPacket = {
+        id: generateId(),
+        timestamp: new Date(),
+        direction: "read",
+        data: ack,
+        hexView: toHex(ack),
+        byteLength: ack.length,
+        deviceId: selectedDevice.id,
+      };
+      setTimeout(() => {
+        setPackets((prev) => {
+          const next = [...prev, rxPacket];
+          savePackets(next);
+          return next.slice(-200);
+        });
+      }, 180);
+    }
   }, [selectedDevice]);
 
   const clearPackets = useCallback(() => {

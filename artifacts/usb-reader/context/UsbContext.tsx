@@ -290,8 +290,10 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
         `RPM:${Math.round(800 + Math.sin(tick * 0.2) * 400)} CURR:${(12.4 + Math.sin(tick * 0.4) * 2).toFixed(1)}A SOC:${Math.max(10, Math.min(100, 78 - tick * 0.5)).toFixed(0)}%`,
         `{"bms":{"soc":${Math.round(78 - tick * 0.3)},"pack_voltage_v":${(320 + Math.sin(tick * 0.1) * 10).toFixed(1)},"pack_current_a":${(15 + Math.sin(tick * 0.2) * 5).toFixed(1)},"pack_temp_c":${(28 + Math.sin(tick * 0.05) * 4).toFixed(1)}}}`,
         `HEARTBEAT:${tick} UPTIME:${tick * 3}s OK`,
-        `DATA:${Array.from({length: 8}, () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join(" ")}`,
         `MOTOR:RPM=${Math.round(1200 + Math.sin(tick * 0.15) * 300)} TEMP=${(45 + Math.sin(tick * 0.08) * 10).toFixed(0)}C LOAD=${Math.round(40 + Math.sin(tick * 0.2) * 20)}%`,
+        `DCDC:VOLT=${(12.8 + Math.sin(tick * 0.2) * 0.3).toFixed(2)}V CURR=${(2.1 + Math.sin(tick * 0.4) * 0.5).toFixed(1)}A TEMP=${(38 + Math.sin(tick * 0.07) * 6).toFixed(0)}C`,
+        `RELAY:MAIN=${tick % 7 > 1 ? 1 : 0} FAN=${tick % 5 > 2 ? 1 : 0} CHRG=${tick % 11 > 8 ? 1 : 0} PACK=${tick % 3 > 0 ? 1 : 0}`,
+        `CHRG:STATUS=${tick % 9 > 6 ? "Charging" : "Idle"} VOLT=${tick % 9 > 6 ? (220 + Math.sin(tick * 0.1) * 5).toFixed(1) : "0.0"}V CURR=${tick % 9 > 6 ? (8 + Math.sin(tick * 0.2) * 2).toFixed(1) : "0.0"}A`,
       ];
 
       const raw = payloads[tick % payloads.length];

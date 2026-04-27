@@ -2,9 +2,8 @@ import { useMemo, useEffect, useState } from "react";
 import { DataPacket } from "@/context/UsbContext";
 
 export interface ParsedUsbData {
-  // Connection / signal quality
-  dataRateKbps: number;        // KB/s in last 3 seconds
-  packetsPerSec: number;       // packets/s in last 3 seconds
+  dataRateKbps: number;
+  packetsPerSec: number;
   totalRxBytes: number;
   totalTxBytes: number;
   totalBytes: number;
@@ -12,143 +11,159 @@ export interface ParsedUsbData {
   txCount: number;
 
   // BMS / Battery
-  soc: number;                 // 0-100 %
-  packVoltageV: number;        // volts
-  packCurrentA: number;        // amps
-  packTempC: number;           // celsius
+  soc: number;
+  packVoltageV: number;
+  packCurrentA: number;
+  packTempC: number;
 
-  // VCC / supply
-  vccV: number;                // volts (e.g. 3.28)
-  boardTempC: number;          // celsius
+  // Board supply
+  vccV: number;
+  boardTempC: number;
 
   // Motor
   motorRpm: number;
   motorTempC: number;
   motorLoadPct: number;
 
+  // DC-DC converter
+  dcdcVoltV: number;
+  dcdcCurrentA: number;
+  dcdcTempC: number;
+
+  // Charger
+  chrgrStatus: string;
+  chrgrVoltV: number;
+  chrgrCurrentA: number;
+
+  // Relays (true = energised)
+  relayMain: boolean;
+  relayFan: boolean;
+  relayChrg: boolean;
+  relayPack: boolean;
+
   // System
   uptimeSec: number;
   heartbeat: number;
 
-  // Last raw packet
   lastPacketData: string;
   lastPacketTime: string;
 }
 
 const DEFAULTS: ParsedUsbData = {
-  dataRateKbps: 0,
-  packetsPerSec: 0,
-  totalRxBytes: 0,
-  totalTxBytes: 0,
-  totalBytes: 0,
-  rxCount: 0,
-  txCount: 0,
-  soc: 0,
-  packVoltageV: 0,
-  packCurrentA: 0,
-  packTempC: 0,
-  vccV: 0,
-  boardTempC: 0,
-  motorRpm: 0,
-  motorTempC: 0,
-  motorLoadPct: 0,
-  uptimeSec: 0,
-  heartbeat: 0,
-  lastPacketData: "",
-  lastPacketTime: "",
+  dataRateKbps: 0, packetsPerSec: 0,
+  totalRxBytes: 0, totalTxBytes: 0, totalBytes: 0,
+  rxCount: 0, txCount: 0,
+  soc: 0, packVoltageV: 0, packCurrentA: 0, packTempC: 0,
+  vccV: 0, boardTempC: 0,
+  motorRpm: 0, motorTempC: 0, motorLoadPct: 0,
+  dcdcVoltV: 0, dcdcCurrentA: 0, dcdcTempC: 0,
+  chrgrStatus: "—", chrgrVoltV: 0, chrgrCurrentA: 0,
+  relayMain: false, relayFan: false, relayChrg: false, relayPack: false,
+  uptimeSec: 0, heartbeat: 0,
+  lastPacketData: "", lastPacketTime: "",
 };
 
-/** Parses the latest USB packets into structured telemetry */
 function parsePackets(packets: DataPacket[]): ParsedUsbData {
-  const result = { ...DEFAULTS };
-
+  const r = { ...DEFAULTS };
   const rxPkts = packets.filter((p) => p.direction === "read");
   const txPkts = packets.filter((p) => p.direction === "write");
 
-  result.rxCount = rxPkts.length;
-  result.txCount = txPkts.length;
-  result.totalRxBytes = rxPkts.reduce((s, p) => s + p.byteLength, 0);
-  result.totalTxBytes = txPkts.reduce((s, p) => s + p.byteLength, 0);
-  result.totalBytes = result.totalRxBytes + result.totalTxBytes;
+  r.rxCount = rxPkts.length;
+  r.txCount = txPkts.length;
+  r.totalRxBytes = rxPkts.reduce((s, p) => s + p.byteLength, 0);
+  r.totalTxBytes = txPkts.reduce((s, p) => s + p.byteLength, 0);
+  r.totalBytes = r.totalRxBytes + r.totalTxBytes;
 
-  // Data rate — bytes received in the last 3 seconds
   const now = Date.now();
   const recent3s = rxPkts.filter((p) => now - p.timestamp.getTime() < 3000);
-  const recentBytes = recent3s.reduce((s, p) => s + p.byteLength, 0);
-  result.dataRateKbps = recentBytes / 3 / 1024;
-  result.packetsPerSec = recent3s.length / 3;
+  r.dataRateKbps = recent3s.reduce((s, p) => s + p.byteLength, 0) / 3 / 1024;
+  r.packetsPerSec = recent3s.length / 3;
 
   if (packets.length > 0) {
     const last = packets[packets.length - 1];
-    result.lastPacketData = last.data;
-    result.lastPacketTime = last.timestamp.toLocaleTimeString([], { hour12: false });
+    r.lastPacketData = last.data;
+    r.lastPacketTime = last.timestamp.toLocaleTimeString([], { hour12: false });
   }
 
-  // Parse each recent RX packet for telemetry fields
-  const recentRx = rxPkts.slice(-12); // look at last 12 packets
-  for (const pkt of recentRx) {
+  for (const pkt of rxPkts.slice(-16)) {
     const d = pkt.data;
 
     // STATUS:OK VCC:3.28V TEMP:23.0C
     const vccM = d.match(/VCC:([\d.]+)V/i);
-    if (vccM) result.vccV = parseFloat(vccM[1]);
-
+    if (vccM) r.vccV = parseFloat(vccM[1]);
     const tmpM = d.match(/TEMP:([\d.]+)C/i);
-    if (tmpM) result.boardTempC = parseFloat(tmpM[1]);
+    if (tmpM) r.boardTempC = parseFloat(tmpM[1]);
 
     // RPM:800 CURR:12.4A SOC:78%
     const rpmM = d.match(/^RPM:([\d.]+)/);
-    if (rpmM) result.motorRpm = parseFloat(rpmM[1]);
-
+    if (rpmM) r.motorRpm = parseFloat(rpmM[1]);
     const currM = d.match(/CURR:([\d.]+)A/i);
-    if (currM) result.packCurrentA = parseFloat(currM[1]);
-
+    if (currM) r.packCurrentA = parseFloat(currM[1]);
     const socM = d.match(/SOC:([\d.]+)%/i);
-    if (socM) result.soc = parseFloat(socM[1]);
+    if (socM) r.soc = parseFloat(socM[1]);
 
-    // BMS JSON  {"bms":{"soc":78,"pack_voltage_v":320.1,"pack_current_a":15.0,"pack_temp_c":28.0}}
+    // BMS JSON
     if (d.startsWith("{")) {
       try {
-        const parsed = JSON.parse(d);
-        const bms = parsed.bms;
+        const bms = JSON.parse(d).bms;
         if (bms) {
-          if (bms.soc != null) result.soc = bms.soc;
-          if (bms.pack_voltage_v != null) result.packVoltageV = bms.pack_voltage_v;
-          if (bms.pack_current_a != null) result.packCurrentA = bms.pack_current_a;
-          if (bms.pack_temp_c != null) result.packTempC = bms.pack_temp_c;
+          if (bms.soc != null) r.soc = bms.soc;
+          if (bms.pack_voltage_v != null) r.packVoltageV = bms.pack_voltage_v;
+          if (bms.pack_current_a != null) r.packCurrentA = bms.pack_current_a;
+          if (bms.pack_temp_c != null) r.packTempC = bms.pack_temp_c;
         }
       } catch {}
     }
 
-    // HEARTBEAT:5 UPTIME:15s OK
+    // HEARTBEAT / UPTIME
     const hbM = d.match(/HEARTBEAT:([\d]+)/i);
-    if (hbM) result.heartbeat = parseInt(hbM[1]);
-
+    if (hbM) r.heartbeat = parseInt(hbM[1]);
     const upM = d.match(/UPTIME:([\d]+)s/i);
-    if (upM) result.uptimeSec = parseInt(upM[1]);
+    if (upM) r.uptimeSec = parseInt(upM[1]);
 
     // MOTOR:RPM=1200 TEMP=45C LOAD=40%
     const mRpmM = d.match(/MOTOR:RPM=([\d.]+)/i);
-    if (mRpmM) result.motorRpm = parseFloat(mRpmM[1]);
-
+    if (mRpmM) r.motorRpm = parseFloat(mRpmM[1]);
     const mTmpM = d.match(/MOTOR:.*?TEMP=([\d.]+)C/i);
-    if (mTmpM) result.motorTempC = parseFloat(mTmpM[1]);
-
+    if (mTmpM) r.motorTempC = parseFloat(mTmpM[1]);
     const mLdM = d.match(/LOAD=([\d.]+)%/i);
-    if (mLdM) result.motorLoadPct = parseFloat(mLdM[1]);
+    if (mLdM) r.motorLoadPct = parseFloat(mLdM[1]);
+
+    // DCDC:VOLT=12.8V CURR=2.1A TEMP=38C
+    const dcV = d.match(/DCDC:VOLT=([\d.]+)V/i);
+    if (dcV) r.dcdcVoltV = parseFloat(dcV[1]);
+    const dcC = d.match(/DCDC:.*?CURR=([\d.]+)A/i);
+    if (dcC) r.dcdcCurrentA = parseFloat(dcC[1]);
+    const dcT = d.match(/DCDC:.*?TEMP=([\d.]+)C/i);
+    if (dcT) r.dcdcTempC = parseFloat(dcT[1]);
+
+    // RELAY:MAIN=1 FAN=0 CHRG=0 PACK=1
+    const rMain = d.match(/RELAY:.*?MAIN=([01])/i);
+    if (rMain) r.relayMain = rMain[1] === "1";
+    const rFan = d.match(/FAN=([01])/i);
+    if (rFan) r.relayFan = rFan[1] === "1";
+    const rChrg = d.match(/CHRG=([01])/i);
+    if (rChrg) r.relayChrg = rChrg[1] === "1";
+    const rPack = d.match(/PACK=([01])/i);
+    if (rPack) r.relayPack = rPack[1] === "1";
+
+    // CHRG:STATUS=Idle VOLT=0.0V CURR=0.0A
+    const csM = d.match(/CHRG:STATUS=([^\s]+)/i);
+    if (csM) r.chrgrStatus = csM[1];
+    const cvM = d.match(/CHRG:.*?VOLT=([\d.]+)V/i);
+    if (cvM) r.chrgrVoltV = parseFloat(cvM[1]);
+    const ccM = d.match(/CHRG:.*?CURR=([\d.]+)A/i);
+    if (ccM) r.chrgrCurrentA = parseFloat(ccM[1]);
   }
 
-  return result;
+  return r;
 }
 
-/** Hook: re-parses every 800 ms when packets change */
 export function useParsedUsbData(packets: DataPacket[]): ParsedUsbData {
   const [tick, setTick] = useState(0);
-
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 800);
     return () => clearInterval(id);
   }, []);
-
   return useMemo(() => parsePackets(packets), [packets, tick]);
 }

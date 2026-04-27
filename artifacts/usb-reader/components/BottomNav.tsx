@@ -7,15 +7,15 @@ import { useUsb } from "@/context/UsbContext";
 type MCIcon = React.ComponentProps<typeof MaterialCommunityIcons>["name"];
 
 const C = {
-  bg:     "rgba(21,25,27,1)",
   panel:  "rgba(26,30,32,1)",
   border: "rgba(51,56,58,1)",
   muted:  "rgba(120,122,122,1)",
-  dim:    "rgba(50,52,52,1)",
+  dim:    "rgba(45,48,50,1)",
   green:  "#6EDCA1",
   yellow: "#FFC832",
   red:    "#FF503C",
   blue:   "#50B4FF",
+  orange: "#FF9811",
 };
 
 interface TabDef {
@@ -27,11 +27,11 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { icon: "chart-timeline-variant", label: "Monitor",  href: "/monitor",  color: C.blue },
-  { icon: "console-line",           label: "Write",    href: "/write",    color: C.green },
-  { icon: "home",                   label: "Home",     href: "/",         color: C.green, isHome: true },
-  { icon: "file-code-outline",      label: "Decoder",  href: "/decoder",  color: C.yellow },
-  { icon: "cog-outline",            label: "Settings", href: "/settings", color: C.muted },
+  { icon: "chart-timeline-variant", label: "Monitor",  href: "/monitor",      color: C.blue   },
+  { icon: "console-line",           label: "Write",    href: "/write",        color: C.green  },
+  { icon: "home",                   label: "Home",     href: "/",             color: C.green, isHome: true },
+  { icon: "stethoscope",            label: "Diag",     href: "/diagnostics",  color: C.orange },
+  { icon: "cog-outline",            label: "Settings", href: "/settings",     color: C.muted  },
 ];
 
 export function BottomNav() {
@@ -54,33 +54,26 @@ export function BottomNav() {
               style={[
                 s.tab,
                 {
-                  backgroundColor: isActive
-                    ? `${tab.color}18`
-                    : "transparent",
-                  borderColor: isActive ? `${tab.color}50` : C.border,
+                  backgroundColor: isActive ? `${tab.color}18` : "transparent",
+                  borderColor:     isActive ? `${tab.color}50` : C.border,
                 },
               ]}
             >
               <View style={s.iconWrap}>
                 <MaterialCommunityIcons
                   name={tab.icon}
-                  size={18}
+                  size={17}
                   color={isActive ? tab.color : C.muted}
                 />
-                {/* Packet count badge on Monitor */}
+                {/* RX packet badge on Monitor */}
                 {tab.href === "/monitor" && rxCount > 0 && (
                   <View style={s.badge}>
                     <Text style={s.badgeTxt}>{rxCount > 99 ? "99+" : rxCount}</Text>
                   </View>
                 )}
-                {/* USB status dot on Home */}
+                {/* USB live dot on Home */}
                 {tab.isHome && (
-                  <View
-                    style={[
-                      s.usbDot,
-                      { backgroundColor: isConnected ? C.green : C.dim },
-                    ]}
-                  />
+                  <View style={[s.usbDot, { backgroundColor: isConnected ? C.green : C.dim }]} />
                 )}
               </View>
               <Text style={[s.label, { color: isActive ? tab.color : C.muted }]}>
@@ -101,9 +94,9 @@ const s = StyleSheet.create({
     backgroundColor: C.panel,
     borderTopWidth: 1,
     borderTopColor: C.border,
-    paddingHorizontal: 6,
+    paddingHorizontal: 5,
     paddingVertical: 5,
-    gap: 4,
+    gap: 3,
   },
   tabLink: {
     flex: 1,
@@ -118,9 +111,7 @@ const s = StyleSheet.create({
     gap: 2,
     paddingVertical: 4,
   },
-  iconWrap: {
-    position: "relative",
-  },
+  iconWrap: { position: "relative" },
   badge: {
     position: "absolute",
     top: -5,
@@ -132,11 +123,7 @@ const s = StyleSheet.create({
     minWidth: 14,
     alignItems: "center",
   },
-  badgeTxt: {
-    color: "#fff",
-    fontSize: 7,
-    fontWeight: "800",
-  },
+  badgeTxt: { color: "#fff", fontSize: 7, fontWeight: "800" },
   usbDot: {
     position: "absolute",
     top: -3,
@@ -147,9 +134,5 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.panel,
   },
-  label: {
-    fontSize: 9,
-    fontWeight: "700",
-    letterSpacing: 0.2,
-  },
+  label: { fontSize: 8, fontWeight: "700", letterSpacing: 0.2 },
 });

@@ -3,22 +3,25 @@ import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from "react-n
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb, type DataPacket } from "@/context/UsbContext";
-import { AppHeader } from "@/components/AppHeader";
+import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
+import { UsbConnectionBar } from "@/components/UsbConnectionBar";
+
+import { Colors, Typography, Spacing, Border } from "@/theme";
 
 const C = {
-  bg:     "rgba(21,25,27,1)",
-  panel:  "rgba(26,30,32,1)",
-  card:   "rgba(32,36,38,1)",
-  border: "rgba(51,56,58,1)",
-  text:   "rgba(220,221,221,1)",
-  muted:  "rgba(120,122,122,1)",
-  dim:    "rgba(60,62,62,1)",
-  green:  "#6EDCA1",
-  yellow: "#FFC832",
-  red:    "#FF503C",
-  blue:   "#50B4FF",
-  term:   "#020810",
+  bg:     Colors.background,
+  panel:  Colors.surfaceContainerLow,
+  card:   Colors.surfaceContainer,
+  border: Colors.outlineVariant,
+  text:   Colors.onSurface,
+  muted:  Colors.onSurfaceVariant,
+  dim:    Colors.dim,
+  green:  Colors.tertiary,
+  yellow: Colors.primaryFixedDim,
+  red:    Colors.error,
+  blue:   Colors.secondary,
+  term:   Colors.terminal,
 };
 
 type ViewMode = "TEXT" | "HEX" | "ASCII";
@@ -109,15 +112,15 @@ function HexViewer({ pkt, mode }: { pkt: DataPacket | null; mode: ViewMode }) {
 const hv = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: C.term },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: C.term },
-  emptyTxt: { color: C.muted, fontSize: 12 },
-  fileHeader: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(35,39,41,1)", borderRadius: 6, padding: 8, marginBottom: 8 },
-  fileHeaderTxt: { fontSize: 11, fontWeight: "600" },
+  emptyTxt: { ...Typography.bodyMd, color: C.muted, fontSize: 12 },
+  fileHeader: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, backgroundColor: Colors.surfaceContainerHigh, padding: Spacing.sm, marginBottom: Spacing.sm },
+  fileHeaderTxt: { ...Typography.labelCaps, fontSize: 10 },
   rawTxt: { color: C.green, fontSize: 11, fontFamily: "monospace", lineHeight: 18 },
   dataRow: { flexDirection: "row", alignItems: "center", paddingVertical: 2 },
-  offset: { color: "rgba(60,62,62,1)", fontSize: 9, width: 68 },
+  offset: { color: Colors.outlineVariant, fontSize: 9, width: 68 },
   bytesWrap: { flexDirection: "row", gap: 2, flex: 1 },
   byte: { fontSize: 9, width: 17, textAlign: "center" },
-  ascii: { color: "rgba(50,150,50,1)", fontSize: 9, width: 96 },
+  ascii: { color: Colors.tertiary, fontSize: 9, width: 96 },
   asciiOnly: { color: C.green, fontSize: 10, flex: 1 },
 });
 
@@ -134,31 +137,23 @@ export default function MonitorScreen() {
 
   return (
     <View style={s.root}>
-      <AppHeader
-        title="Packet Monitor"
-        icon="chart-timeline-variant"
-        iconColor={C.blue}
-        right={
-          <View style={s.headerExtras}>
-            <View style={[s.statPill, { borderColor: "rgba(80,180,255,0.4)" }]}>
-              <MaterialCommunityIcons name="arrow-down-circle" size={11} color={C.blue} />
-              <Text style={[s.statTxt, { color: C.blue }]}>{rxCount} RX</Text>
-            </View>
-            <View style={[s.statPill, { borderColor: "rgba(110,220,161,0.4)" }]}>
-              <MaterialCommunityIcons name="arrow-up-circle" size={11} color={C.green} />
-              <Text style={[s.statTxt, { color: C.green }]}>{txCount} TX</Text>
-            </View>
-            <Pressable style={s.clearBtn} onPress={() => { clearPackets(); setSelected(null); }}>
-              <MaterialCommunityIcons name="delete-outline" size={14} color={C.red} />
-              <Text style={s.clearTxt}>CLEAR</Text>
-            </Pressable>
-            <View style={[s.livePill, { backgroundColor: isConnected ? "rgba(110,220,161,0.1)" : "transparent", borderColor: isConnected ? "rgba(110,220,161,0.4)" : C.border }]}>
-              <View style={[s.liveDot, { backgroundColor: isConnected ? C.green : C.muted }]} />
-              <Text style={[s.liveTxt, { color: isConnected ? C.green : C.muted }]}>{isConnected ? "LIVE" : "IDLE"}</Text>
-            </View>
-          </View>
-        }
-      />
+      <Header />
+      <View style={s.headerExtras}>
+        <View style={[s.statPill, { borderColor: "rgba(80,180,255,0.4)" }]}>
+          <MaterialCommunityIcons name="arrow-down-circle" size={11} color={C.blue} />
+          <Text style={[s.statTxt, { color: C.blue }]}>{rxCount} RX</Text>
+        </View>
+        <View style={[s.statPill, { borderColor: "rgba(110,220,161,0.4)" }]}>
+          <MaterialCommunityIcons name="arrow-up-circle" size={11} color={C.green} />
+          <Text style={[s.statTxt, { color: C.green }]}>{txCount} TX</Text>
+        </View>
+        <Pressable style={s.clearBtn} onPress={() => { clearPackets(); setSelected(null); }}>
+          <MaterialCommunityIcons name="delete-outline" size={14} color={C.red} />
+          <Text style={s.clearTxt}>CLEAR</Text>
+        </Pressable>
+        <View style={{ flex: 1 }} />
+        <UsbConnectionBar compact />
+      </View>
 
       <View style={s.body}>
         {/* ── LEFT: Packet log ── */}
@@ -240,35 +235,35 @@ export default function MonitorScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg, flexDirection: "column" },
 
-  headerExtras: { flexDirection: "row", alignItems: "center", gap: 5 },
-  statPill: { flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
-  statTxt: { fontSize: 10, fontWeight: "700" },
-  clearBtn: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(255,80,60,0.1)", borderRadius: 6, borderWidth: 1, borderColor: "rgba(255,80,60,0.4)", paddingHorizontal: 8, paddingVertical: 4 },
-  clearTxt: { color: C.red, fontSize: 9, fontWeight: "700" },
-  livePill: { flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderRadius: 5, paddingHorizontal: 7, paddingVertical: 3 },
+  headerExtras: { flexDirection: "row", alignItems: "center", gap: Spacing.xs, paddingHorizontal: Spacing.panelPadding, paddingVertical: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Border.color, backgroundColor: Colors.surfaceContainerLowest },
+  statPill: { flexDirection: "row", alignItems: "center", gap: Spacing.xs, borderWidth: Border.width, paddingHorizontal: Spacing.sm, paddingVertical: 2 },
+  statTxt: { ...Typography.labelCaps, fontSize: 9 },
+  clearBtn: { flexDirection: "row", alignItems: "center", gap: Spacing.xs, backgroundColor: `${Colors.error}18`, borderWidth: Border.width, borderColor: `${Colors.error}55`, paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs },
+  clearTxt: { ...Typography.labelCaps, color: C.red, fontSize: 9 },
+  livePill: { flexDirection: "row", alignItems: "center", gap: Spacing.xs, borderWidth: Border.width, paddingHorizontal: Spacing.sm, paddingVertical: 3 },
   liveDot: { width: 5, height: 5, borderRadius: 3 },
-  liveTxt: { fontSize: 8, fontWeight: "700", letterSpacing: 0.5 },
+  liveTxt: { ...Typography.labelCaps, fontSize: 8 },
 
   body: { flex: 1, flexDirection: "row" },
   card: { backgroundColor: C.card },
 
-  leftPanel: { width: 210, borderRightWidth: 1, borderRightColor: C.border, backgroundColor: C.panel },
-  lPanelHead: { flexDirection: "row", alignItems: "center", gap: 7, padding: 10, borderBottomWidth: 1, borderBottomColor: C.border },
-  lPanelTitle: { color: C.text, fontSize: 12, fontWeight: "700" },
-  emptyLog: { flex: 1, alignItems: "center", justifyContent: "center", padding: 20, gap: 8 },
-  emptyLogTxt: { color: C.muted, fontSize: 13, fontWeight: "500" },
-  emptyLogSub: { color: C.dim, fontSize: 10, textAlign: "center" },
+  leftPanel: { width: 210, borderRightWidth: Border.width, borderRightColor: Border.color, backgroundColor: C.panel },
+  lPanelHead: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, padding: Spacing.panelPadding, borderBottomWidth: Border.width, borderBottomColor: Border.color },
+  lPanelTitle: { ...Typography.labelCaps, color: C.text, fontSize: 11 },
+  emptyLog: { flex: 1, alignItems: "center", justifyContent: "center", padding: Spacing.lg, gap: Spacing.sm },
+  emptyLogTxt: { ...Typography.headlineMd, color: C.muted, fontSize: 13 },
+  emptyLogSub: { ...Typography.bodyMd, color: C.dim, fontSize: 10, textAlign: "center" },
 
   rightPanel: { flex: 1, flexDirection: "column" },
-  viewerBar: { flexDirection: "row", alignItems: "center", gap: 8, padding: 8, borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.panel },
+  viewerBar: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, padding: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Border.color, backgroundColor: C.panel },
   statusDotBig: { width: 8, height: 8, borderRadius: 4 },
-  viewerTitle: { color: C.text, fontSize: 11, fontWeight: "600", flex: 1 },
-  modeRow: { flexDirection: "row", gap: 4 },
-  modeBtn: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5, borderWidth: 1 },
-  modeTxt: { fontSize: 9, fontWeight: "700" },
-  readySub: { color: C.dim, fontSize: 11, textAlign: "center" },
+  viewerTitle: { ...Typography.labelCaps, color: C.text, fontSize: 10, flex: 1 },
+  modeRow: { flexDirection: "row", gap: Spacing.xs },
+  modeBtn: { paddingHorizontal: Spacing.sm, paddingVertical: 3, borderWidth: Border.width },
+  modeTxt: { ...Typography.labelCaps, fontSize: 9 },
+  readySub: { ...Typography.bodyMd, color: C.dim, fontSize: 11, textAlign: "center" },
 
-  statusStrip: { flexDirection: "row", alignItems: "center", gap: 6, padding: 8, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: C.panel },
-  statusStripTxt: { color: C.muted, fontSize: 9, fontWeight: "500", flex: 1 },
-  statusStripRight: { color: C.muted, fontSize: 9 },
+  statusStrip: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, padding: Spacing.sm, borderTopWidth: Border.width, borderTopColor: Border.color, backgroundColor: C.panel },
+  statusStripTxt: { ...Typography.bodyMd, color: C.muted, fontSize: 9, flex: 1 },
+  statusStripRight: { ...Typography.labelCaps, color: C.muted, fontSize: 9 },
 });

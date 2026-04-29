@@ -13,24 +13,27 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as DocumentPicker from "expo-document-picker";
-import { AppHeader } from "@/components/AppHeader";
+import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
 import { useUsb } from "@/context/UsbContext";
+import { UsbConnectionBar } from "@/components/UsbConnectionBar";
+
+import { Colors, Typography, Spacing, Border } from "@/theme";
 
 const C = {
-  bg: "rgba(21,25,27,1)",
-  card: "rgba(28,32,34,1)",
-  row: "rgba(35,39,41,1)",
-  border: "rgba(51,56,58,1)",
-  text: "rgba(220,221,221,1)",
-  muted: "rgba(120,122,122,1)",
-  mid: "rgba(160,162,162,1)",
-  green: "#6EDCA1",
-  yellow: "#FFC832",
-  red: "#FF503C",
-  blue: "#50B4FF",
-  orange: "#FF9811",
-  terminal: "#020810",
+  bg:       Colors.background,
+  card:     Colors.surfaceContainer,
+  row:      Colors.surfaceContainerHigh,
+  border:   Colors.outlineVariant,
+  text:     Colors.onSurface,
+  muted:    Colors.onSurfaceVariant,
+  mid:      Colors.onSurface,
+  green:    Colors.tertiary,
+  yellow:   Colors.primaryFixedDim,
+  red:      Colors.error,
+  blue:     Colors.secondary,
+  orange:   Colors.primary,
+  terminal: Colors.terminal,
 };
 
 // ── Flash constants — matches Python exactly ─────────────────
@@ -434,17 +437,15 @@ export default function DecoderScreen() {
       // Step 4 — DEVICE INFO (listen)
       setSendStep(3);
       log(">> Step 4: Wait device info RX id=0x456 [11 ...]");
-      log("   RX id=0x456 [11 00 00 00 01 00] ✓ (demo)");
       await delay(80);
 
       if (abortRef.current) throw new Error("Aborted");
 
       // Step 5 — UNLOCK
       setSendStep(4);
-      log(">> Step 5: UNLOCK TX [A0 00 E2 04 00 00 02 00] → RX [50]");
+      log(">> Step 5: UNLOCK TX [A0 00 E2 04 00 00 02 00]");
       send(ID_BUS, [CMD_UNLOCK, 0x00, 0xE2, 0x04, 0x00, 0x00, 0x02, 0x00], "UNLOCK");
       await delay(30);
-      log(`   GOT id=0x${ID_BUS} [${toHexStr([ACK_OK])}] ✓`);
 
       if (abortRef.current) throw new Error("Aborted");
 
@@ -490,7 +491,6 @@ export default function DecoderScreen() {
       log(`>> Step 7: VERIFY CRC32=0x${checksum.toString(16).toUpperCase().padStart(8,"0")}`);
       send(ID_BUS, [CMD_VERIFY, 0x00, 0xE2, 0x04, ...crcBytes], "VERIFY");
       await delay(30);
-      log(`   GOT id=0x${ID_BUS} [${toHexStr([ACK_CRC_OK])}] CRC PASS ✓`);
 
       if (abortRef.current) throw new Error("Aborted");
 
@@ -534,7 +534,9 @@ export default function DecoderScreen() {
 
   return (
     <View style={[styles.root, { paddingLeft: leftPad, paddingRight: rightPad }]}>
-      <AppHeader title="BIN Decoder" icon="file-code-outline" iconColor={C.yellow} />
+      <Header />
+      {/* Shared USB connection bar */}
+      <UsbConnectionBar compact />
 
       <View style={styles.body}>
         {/* ── LEFT SIDEBAR ── */}

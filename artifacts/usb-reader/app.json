@@ -18,8 +18,20 @@
     },
     "android": {
       "permissions": [
-        "android.permission.USB_PERMISSION"
-      ]
+        "android.permission.INTERNET",
+        "android.permission.VIBRATE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
+      "intentFilters": [
+        {
+          "action": "android.hardware.usb.action.USB_DEVICE_ATTACHED"
+        },
+        {
+          "action": "android.hardware.usb.action.USB_DEVICE_DETACHED"
+        }
+      ],
+      "package": "com.firstclassdelivary.usbreader"
     },
     "web": {
       "favicon": "./assets/images/icon.png"
@@ -37,6 +49,14 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {
+        "origin": "https://replit.com/"
+      },
+      "eas": {
+        "projectId": "d20f23e1-f4e0-4a9c-bb9e-e6c971d94ba7"
+      }
     }
   }
 }

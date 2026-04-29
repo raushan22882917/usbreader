@@ -5,26 +5,29 @@ import {
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb } from "@/context/UsbContext";
-import { AppHeader } from "@/components/AppHeader";
+import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
+import { UsbConnectionBar } from "@/components/UsbConnectionBar";
 
 // KeyboardAwareScrollView removed — use standard ScrollView
 
+import { Colors, Typography, Spacing, Border } from "@/theme";
+
 const C = {
-  bg:     "rgba(21,25,27,1)",
-  panel:  "rgba(26,30,32,1)",
-  card:   "rgba(32,36,38,1)",
-  border: "rgba(51,56,58,1)",
-  text:   "rgba(220,221,221,1)",
-  muted:  "rgba(120,122,122,1)",
-  dim:    "rgba(60,62,62,1)",
-  green:  "#6EDCA1",
-  yellow: "#FFC832",
-  orange: "#FF9811",
-  red:    "#FF503C",
-  blue:   "#50B4FF",
-  purple: "#A78BFA",
-  term:   "#020810",
+  bg:     Colors.background,
+  panel:  Colors.surfaceContainerLow,
+  card:   Colors.surfaceContainer,
+  border: Colors.outlineVariant,
+  text:   Colors.onSurface,
+  muted:  Colors.onSurfaceVariant,
+  dim:    Colors.dim,
+  green:  Colors.tertiary,
+  yellow: Colors.primaryFixedDim,
+  orange: Colors.primary,
+  red:    Colors.error,
+  blue:   Colors.secondary,
+  purple: Colors.inversePrimary,
+  term:   Colors.terminal,
 };
 
 type MCIcon = React.ComponentProps<typeof MaterialCommunityIcons>["name"];
@@ -113,19 +116,15 @@ export default function WriteScreen() {
 
   return (
     <View style={s.root}>
-      <AppHeader
-        title="Write Terminal"
-        icon="console-line"
-        iconColor={C.green}
-        right={
-          <View style={s.headerExtras}>
-            <View style={[s.statPill, { borderColor: isConnected ? "rgba(110,220,161,0.35)" : "rgba(255,80,60,0.3)" }]}>
-              <MaterialCommunityIcons name="arrow-up-circle" size={11} color={isConnected ? C.green : C.red} />
-              <Text style={[s.statTxt, { color: isConnected ? C.green : C.red }]}>{txPkts.length} TX</Text>
-            </View>
-          </View>
-        }
-      />
+      <Header />
+      <View style={s.headerExtras}>
+        <View style={[s.statPill, { borderColor: isConnected ? "rgba(110,220,161,0.35)" : "rgba(255,80,60,0.3)" }]}>
+          <MaterialCommunityIcons name="arrow-up-circle" size={11} color={isConnected ? C.green : C.red} />
+          <Text style={[s.statTxt, { color: isConnected ? C.green : C.red }]}>{txPkts.length} TX</Text>
+        </View>
+        <View style={{ flex: 1 }} />
+        <UsbConnectionBar compact />
+      </View>
 
       <View style={s.body}>
         {/* ── LEFT: Quick commands ── */}
@@ -228,7 +227,7 @@ export default function WriteScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg, flexDirection: "column" },
 
-  headerExtras: { flexDirection: "row", alignItems: "center", gap: 5 },
+  headerExtras: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.border, backgroundColor: C.panel },
   statPill: { flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
   statTxt: { fontSize: 10, fontWeight: "700" },
 

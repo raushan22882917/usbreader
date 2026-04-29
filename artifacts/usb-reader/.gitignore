@@ -1,41 +1,48 @@
 # Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
 
-# dependencies
+# ── Dependencies ──────────────────────────────────────────────────────────────
 node_modules/
 
-# Expo
+# ── Expo ──────────────────────────────────────────────────────────────────────
 .expo/
 dist/
 web-build/
 expo-env.d.ts
 
-# Native
-ios/
-android/
-*.orig.*
+# ── Metro ─────────────────────────────────────────────────────────────────────
+.metro-health-check*
+
+# ── Android build outputs (keep source, ignore generated) ────────────────────
+android/build/
+android/app/build/
+android/.gradle/
+android/app/.cxx/
+android/local.properties
+
+# ── Signing keys — NEVER commit these ────────────────────────────────────────
 *.jks
+*.keystore
 *.p8
 *.p12
 *.key
 *.mobileprovision
 
-# Metro
-.metro-health-check*
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env*.local
 
-# debug
+# ── Debug logs ────────────────────────────────────────────────────────────────
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+*.orig.*
 
-# macOS
+# ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
-
-# typescript
+# ── TypeScript ────────────────────────────────────────────────────────────────
 *.tsbuildinfo
-.vercel
 
-.env
+# ── Misc ──────────────────────────────────────────────────────────────────────
+.vercel

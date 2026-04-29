@@ -1,22 +1,16 @@
-import React from "react";
-import { StyleSheet, Text, View } from "react-native";
-import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { Link, usePathname } from "expo-router";
-import { useUsb } from "@/context/UsbContext";
+/**
+ * BottomNav — Industrial Tech OS
+ * Utility footer for switching between system views.
+ * Sharp corners, label-caps typography, functional color per tab.
+ */
+import React from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { usePathname, useRouter } from 'expo-router';
+import { useUsb } from '@/context/UsbContext';
+import { Colors, Typography, Spacing, Border } from '../theme';
 
-type MCIcon = React.ComponentProps<typeof MaterialCommunityIcons>["name"];
-
-const C = {
-  panel:  "rgba(26,30,32,1)",
-  border: "rgba(51,56,58,1)",
-  muted:  "rgba(120,122,122,1)",
-  dim:    "rgba(45,48,50,1)",
-  green:  "#6EDCA1",
-  yellow: "#FFC832",
-  red:    "#FF503C",
-  blue:   "#50B4FF",
-  orange: "#FF9811",
-};
+type MCIcon = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 interface TabDef {
   icon: MCIcon;
@@ -29,80 +23,114 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   {
-    icon: "home-outline",
-    activeIcon: "home",
-    label: "Home",
-    href: "/",
-    color: C.green,
+    icon: 'view-dashboard-outline',
+    activeIcon: 'view-dashboard',
+    label: 'Dashboard',
+    href: '/',
+    color: Colors.tertiary,
     isHome: true,
   },
   {
-    icon: "water-outline",
-    activeIcon: "water",
-    label: "Hydraulic",
-    href: "/diagnostics",
-    color: C.orange,
+    icon: 'stethoscope',
+    activeIcon: 'stethoscope',
+    label: 'Diagnostics',
+    href: '/diagnostics',
+    color: Colors.primary,
   },
   {
-    icon: "code-braces",
-    activeIcon: "code-braces",
-    label: "Decoder",
-    href: "/decoder",
-    color: C.blue,
+    icon: 'file-code-outline',
+    activeIcon: 'file-code',
+    label: 'Decoder',
+    href: '/decoder',
+    color: Colors.secondary,
   },
   {
-    icon: "cog-outline",
-    activeIcon: "cog",
-    label: "Settings",
-    href: "/settings",
-    color: C.muted,
+    icon: 'tune-variant',
+    activeIcon: 'tune-variant',
+    label: 'Inverter',
+    href: '/inventor',
+    color: Colors.onSurfaceVariant,
+  },
+  {
+    icon: 'chart-timeline-variant',
+    activeIcon: 'chart-timeline-variant',
+    label: 'Monitor',
+    href: '/monitor',
+    color: Colors.secondary,
+  },
+  {
+    icon: 'send-outline',
+    activeIcon: 'send',
+    label: 'Write',
+    href: '/write',
+    color: Colors.tertiary,
+  },
+  {
+    icon: 'cog-outline',
+    activeIcon: 'cog',
+    label: 'Settings',
+    href: '/settings',
+    color: Colors.onSurfaceVariant,
   },
 ];
 
 export function BottomNav() {
   const pathname = usePathname();
+  const router   = useRouter();
   const { connectionStatus } = useUsb();
-  const isConnected = connectionStatus === "connected";
+  const isConnected = connectionStatus === 'connected';
 
   return (
     <View style={s.bar}>
       {TABS.map((tab) => {
         const isActive = tab.isHome
-          ? pathname === "/" || pathname === ""
+          ? pathname === '/' || pathname === ''
           : pathname === tab.href;
 
         return (
-          <Link key={tab.href} href={tab.href as any} style={s.tabLink}>
+          <Pressable
+            key={tab.href}
+            style={s.tabWrap}
+            onPress={() => router.push(tab.href as any)}
+          >
             <View
               style={[
                 s.tab,
                 isActive && {
                   backgroundColor: `${tab.color}18`,
-                  borderColor:     `${tab.color}55`,
+                  borderColor: `${tab.color}55`,
                 },
               ]}
             >
-              {/* USB live dot anchored to Home icon */}
+              {/* Active indicator line at top */}
+              {isActive && (
+                <View style={[s.activeBar, { backgroundColor: tab.color }]} />
+              )}
               <View style={s.iconWrap}>
                 <MaterialCommunityIcons
                   name={isActive ? tab.activeIcon : tab.icon}
-                  size={20}
-                  color={isActive ? tab.color : C.muted}
+                  size={18}
+                  color={isActive ? tab.color : Colors.onSurfaceVariant}
                 />
+                {/* Live connection dot on Dashboard */}
                 {tab.isHome && (
                   <View
                     style={[
                       s.liveDot,
-                      { backgroundColor: isConnected ? C.green : "rgba(50,53,55,1)" },
+                      {
+                        backgroundColor: isConnected
+                          ? Colors.tertiary
+                          : Colors.surfaceContainerHigh,
+                      },
                     ]}
                   />
                 )}
               </View>
-              <Text style={[s.label, { color: isActive ? tab.color : C.muted }]}>
+              <Text style={[s.label, { color: isActive ? tab.color : Colors.onSurfaceVariant }]}>
                 {tab.label}
               </Text>
             </View>
-          </Link>
+          </Pressable>
         );
       })}
     </View>
@@ -111,39 +139,51 @@ export function BottomNav() {
 
 const s = StyleSheet.create({
   bar: {
-    flexDirection: "row",
-    height: 64,
-    backgroundColor: C.panel,
-    borderTopWidth: 1,
-    borderTopColor: C.border,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    gap: 6,
+    flexDirection: 'row',
+    height: 58,
+    backgroundColor: Colors.surfaceContainerLowest,
+    borderTopWidth: Border.widthThick,
+    borderTopColor: Border.color,
+    paddingHorizontal: Spacing.xs,
   },
-  tabLink: {
+  tabWrap: {
     flex: 1,
-    textDecorationLine: "none",
   },
   tab: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "transparent",
-    gap: 3,
-    paddingVertical: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    paddingVertical: Spacing.xs,
+    borderWidth: Border.width,
+    borderColor: 'transparent',
+    // Sharp corners
   },
-  iconWrap: { position: "relative", alignItems: "center", justifyContent: "center" },
+  activeBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+  },
+  iconWrap: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   liveDot: {
-    position: "absolute",
+    position: 'absolute',
     top: -2,
     right: -6,
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    borderWidth: 1.5,
-    borderColor: C.panel,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: Colors.surfaceContainerLowest,
   },
-  label: { fontSize: 9, fontWeight: "700", letterSpacing: 0.2 },
+  label: {
+    ...Typography.labelCaps,
+    fontSize: 8,
+    letterSpacing: 0.5,
+  },
 });

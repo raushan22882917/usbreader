@@ -1,31 +1,32 @@
 import React, { useState } from "react";
-import {
-  Pressable, ScrollView, StyleSheet, Text, View,
-} from "react-native";
+import { View, Text, ScrollView, Pressable, StyleSheet } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb } from "@/context/UsbContext";
 import { useParsedUsbData } from "@/hooks/useParsedUsbData";
-import { AppHeader } from "@/components/AppHeader";
+import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
+import { UsbConnectionBar } from "@/components/UsbConnectionBar";
 
-// ─── Theme ─────────────────────────────────────────────────────
+import { Colors, Typography, Spacing, Border } from "@/theme";
+
+// ─── Theme alias ───────────────────────────────────────────────
 const C = {
-  bg:      "rgba(21,25,27,1)",
-  panel:   "rgba(26,30,32,1)",
-  card:    "rgba(32,36,38,1)",
-  row:     "rgba(28,32,34,1)",
-  border:  "rgba(51,56,58,1)",
-  rowDiv:  "rgba(40,44,46,1)",
-  text:    "rgba(220,221,221,1)",
-  muted:   "rgba(120,122,122,1)",
-  dim:     "rgba(60,62,62,1)",
-  dimBg:   "rgba(35,39,41,1)",
-  green:   "#6EDCA1",
-  yellow:  "#FFC832",
-  red:     "#FF503C",
-  orange:  "#FF9811",
-  blue:    "#50B4FF",
+  bg:      Colors.background,
+  panel:   Colors.surfaceContainerLow,
+  card:    Colors.surfaceContainer,
+  row:     Colors.surfaceContainerLow,
+  border:  Colors.outlineVariant,
+  rowDiv:  Colors.surfaceContainerHigh,
+  text:    Colors.onSurface,
+  muted:   Colors.onSurfaceVariant,
+  dim:     Colors.dim,
+  dimBg:   Colors.surfaceContainerHigh,
+  green:   Colors.tertiary,
+  yellow:  Colors.primaryFixedDim,
+  red:     Colors.error,
+  orange:  Colors.primary,
+  blue:    Colors.secondary,
 };
 
 // ─── Helpers ───────────────────────────────────────────────────
@@ -147,203 +148,350 @@ export default function DiagnosticsScreen() {
   const isOn = subsystemOn[activeTab];
   const ac   = TABS.find((t) => t.id === activeTab)!;
 
-  // ── Per-subsystem big cards ──
-  const bigCards: {
-    icon: React.ComponentProps<typeof MaterialCommunityIcons>["name"];
-    label: string; value: string; unit: string; color: string; bg: string;
-  }[] = activeTab === "bms" ? [
-    { icon: "battery-high",    label: "SOC",       value: isConnected ? Math.round(p.soc).toString() : "—",   unit: "%",  color: socColor(p.soc),          bg: `${socColor(p.soc)}20` },
-    { icon: "lightning-bolt",  label: "Voltage",   value: isConnected ? fmt(p.packVoltageV) : "—",            unit: "V",  color: C.blue,                   bg: "rgba(80,180,255,0.12)" },
-    { icon: "current-ac",      label: "Current",   value: isConnected ? fmt(p.packCurrentA) : "—",            unit: "A",  color: C.yellow,                 bg: "rgba(255,200,50,0.12)" },
-    { icon: "thermometer",     label: "Pack Temp", value: isConnected ? fmt(p.packTempC) : "—",               unit: "°C", color: tempColor(p.packTempC),   bg: `${tempColor(p.packTempC)}18` },
-  ] : activeTab === "motor" ? [
-    { icon: "engine",          label: "RPM",       value: isConnected ? Math.round(p.motorRpm).toString() : "—", unit: "rpm", color: C.yellow,             bg: "rgba(255,200,50,0.12)" },
-    { icon: "speedometer",     label: "Load",      value: isConnected ? Math.round(p.motorLoadPct).toString() : "—", unit: "%", color: p.motorLoadPct > 80 ? C.red : C.green, bg: "rgba(110,220,161,0.12)" },
-    { icon: "thermometer",     label: "Temp",      value: isConnected ? fmt(p.motorTempC) : "—",              unit: "°C", color: tempColor(p.motorTempC,55,75), bg: `${tempColor(p.motorTempC,55,75)}18` },
-    { icon: "timer-outline",   label: "Uptime",    value: isConnected && p.uptimeSec > 0 ? fmtUptime(p.uptimeSec) : "—", unit: "", color: C.muted,       bg: "rgba(120,122,122,0.1)" },
-  ] : activeTab === "dcdc" ? [
-    { icon: "lightning-bolt",  label: "Output V",  value: isConnected ? fmt(p.dcdcVoltV) : "—",               unit: "V",  color: C.blue,                   bg: "rgba(80,180,255,0.12)" },
-    { icon: "current-dc",      label: "Current",   value: isConnected ? fmt(p.dcdcCurrentA) : "—",            unit: "A",  color: C.green,                  bg: "rgba(110,220,161,0.12)" },
-    { icon: "thermometer",     label: "Temp",      value: isConnected ? fmt(p.dcdcTempC) : "—",               unit: "°C", color: tempColor(p.dcdcTempC),   bg: `${tempColor(p.dcdcTempC)}18` },
-    { icon: "transfer",        label: "Efficiency", value: isConnected && p.dcdcVoltV > 0 && p.packVoltageV > 0 ? `${Math.round((p.dcdcVoltV * p.dcdcCurrentA) / (p.packVoltageV * 0.05) * 100)}` : "—", unit: "%", color: C.muted, bg: "rgba(120,122,122,0.1)" },
-  ] : activeTab === "charger" ? [
-    { icon: "ev-plug-type2",   label: "Status",    value: isConnected ? p.chrgrStatus : "—",                  unit: "",   color: p.chrgrStatus === "Charging" ? C.green : C.muted, bg: "rgba(110,220,161,0.12)" },
-    { icon: "lightning-bolt",  label: "Chgr V",    value: isConnected ? fmt(p.chrgrVoltV) : "—",             unit: "V",  color: C.blue,                   bg: "rgba(80,180,255,0.12)" },
-    { icon: "current-ac",      label: "Chgr I",    value: isConnected ? fmt(p.chrgrCurrentA) : "—",          unit: "A",  color: C.yellow,                 bg: "rgba(255,200,50,0.12)" },
-    { icon: "battery-charging-high", label: "Pack SOC", value: isConnected ? `${Math.round(p.soc)}` : "—",  unit: "%",  color: socColor(p.soc),          bg: `${socColor(p.soc)}20` },
-  ] : [
-    { icon: "heartbeat",       label: "Heartbeat", value: isConnected ? p.heartbeat.toString() : "—",         unit: "#",  color: C.green,                  bg: "rgba(110,220,161,0.12)" },
-    { icon: "counter",         label: "Packets",   value: isConnected ? p.rxCount.toString() : "—",           unit: "rx", color: C.blue,                   bg: "rgba(80,180,255,0.12)" },
-    { icon: "database",        label: "RX Bytes",  value: isConnected ? `${(p.totalRxBytes/1024).toFixed(1)}` : "—", unit: "KB", color: C.muted,         bg: "rgba(120,122,122,0.1)" },
-    { icon: "wifi",            label: "Data Rate", value: isConnected ? fmt(p.dataRateKbps, 2) : "—",         unit: "KB/s", color: C.orange,             bg: "rgba(255,152,17,0.12)" },
-  ];
-
+  
   return (
     <View style={s.root}>
-      <AppHeader title="Diagnostics" icon="stethoscope" iconColor={C.green} />
+      <Header />
+      {/* Shared USB connection bar */}
+      <UsbConnectionBar compact />
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={s.body} showsVerticalScrollIndicator={false}>
 
-        {/* ── USB connection banner ── */}
-        <Pressable
-          style={[s.connBanner, {
-            backgroundColor: isConnected ? "rgba(110,220,161,0.07)" : "rgba(255,80,60,0.06)",
-            borderColor: isConnected ? "rgba(110,220,161,0.3)" : "rgba(255,80,60,0.25)",
-          }]}
-          onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); isConnected ? disconnectDevice() : quickConnect(); }}
-        >
-          <View style={[s.connDot, { backgroundColor: isConnected ? C.green : C.red }]} />
-          <View style={{ flex: 1 }}>
-            <Text style={[s.connTitle, { color: isConnected ? C.green : C.red }]}>
-              {isConnected ? "● USB CONNECTED — Real-time telemetry active" : "○ USB OFFLINE — Tap to connect"}
-            </Text>
-            {isConnected && (
-              <Text style={s.connSub}>
-                {p.rxCount} packets · {(p.totalRxBytes / 1024).toFixed(1)} KB received · {p.dataRateKbps.toFixed(2)} KB/s
-              </Text>
-            )}
+        {/* Top Metrics Row - 6 Cards */}
+        <View style={s.topMetricsRow}>
+          {/* Pack Voltage */}
+          <View style={s.metricCard}>
+            <Text style={s.metricLabel}>PACK VOLTAGE</Text>
+            <View style={[s.metricDivider, { backgroundColor: "#92ccff" }]} />
+            <View style={s.metricValueRow}>
+              <Text style={s.metricValue}>{isConnected ? fmt(p.packVoltageV) : "—"}</Text>
+              <Text style={s.metricUnit}>V</Text>
+            </View>
           </View>
-          <MaterialCommunityIcons
-            name={isConnected ? "link" : "link-off"}
-            size={18}
-            color={isConnected ? C.green : C.red}
-          />
-        </Pressable>
 
-        {/* ── Subsystem tab bar ── */}
-        <View style={s.tabRow}>
-          {TABS.map((t) => {
-            const sel = t.id === activeTab;
-            return (
-              <Pressable
-                key={t.id}
-                style={[s.tab, sel && { backgroundColor: `${t.color}18`, borderColor: `${t.color}45` }]}
-                onPress={() => { Haptics.selectionAsync(); setActiveTab(t.id); }}
-              >
-                <MaterialCommunityIcons name={t.icon} size={14} color={sel ? t.color : C.muted} />
-                <Text style={[s.tabLbl, { color: sel ? t.color : C.muted }]}>{t.label}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        {/* ── Active / Inactive badge ── */}
-        <View style={[s.badge, isOn
-          ? { backgroundColor: "rgba(110,220,161,0.08)", borderColor: "rgba(110,220,161,0.3)" }
-          : { backgroundColor: "rgba(255,80,60,0.08)",  borderColor: "rgba(255,80,60,0.3)" },
-        ]}>
-          <MaterialCommunityIcons name={ac.icon} size={18} color={isOn ? C.green : C.red} />
-          <Text style={s.badgeTitle}>{ac.label} — DIAGNOSTICS</Text>
-          <View style={{ flex: 1 }} />
-          <View style={[s.badgeDot, { backgroundColor: isOn ? C.green : C.red }]} />
-          <Text style={[s.badgeState, { color: isOn ? C.green : C.red }]}>
-            {isOn ? "ACTIVE" : "INACTIVE"}
-          </Text>
-        </View>
-
-        {/* ── Big metric cards ── */}
-        <View style={s.cardRow}>
-          {bigCards.slice(0, 2).map((c) => (
-            <MetricCard key={c.label} {...c} />
-          ))}
-        </View>
-        <View style={[s.cardRow, { marginTop: 6 }]}>
-          {bigCards.slice(2, 4).map((c) => (
-            <MetricCard key={c.label} {...c} />
-          ))}
-        </View>
-
-        {/* ── Divider ── */}
-        <View style={s.div} />
-
-        {/* ── Detailed rows per tab ── */}
-        {activeTab === "bms" && (
-          <>
-            <Section title="Battery Pack" />
-            <Row label="State of Charge" value={isConnected ? `${Math.round(p.soc)}%` : "—"} color={socColor(p.soc)} />
-            <Row label="Pack Voltage" value={isConnected ? `${fmt(p.packVoltageV)} V` : "—"} />
-            <Row label="Pack Current" value={isConnected ? `${fmt(p.packCurrentA)} A` : "—"} />
-            <Row label="Pack Temperature" value={isConnected ? `${fmt(p.packTempC)} °C` : "—"} color={tempColor(p.packTempC)} />
-            <Row label="Supply Voltage (VCC)" value={isConnected ? `${p.vccV.toFixed(2)} V` : "—"} />
-            <Row label="Board Temp" value={isConnected ? `${fmt(p.boardTempC)} °C` : "—"} last />
-            <Section title="Relay Status" />
-            <View style={s.dotGrid}>
-              <StatusDot label="Main Relay" active={p.relayMain} />
-              <StatusDot label="Fan"        active={p.relayFan} />
-              <StatusDot label="Charger"    active={p.relayChrg} />
-              <StatusDot label="Pack"       active={p.relayPack} />
+          {/* Pack Current */}
+          <View style={s.metricCard}>
+            <Text style={s.metricLabel}>PACK CURRENT</Text>
+            <View style={[s.metricDivider, { backgroundColor: "#54e98a" }]} />
+            <View style={s.metricValueRow}>
+              <Text style={[s.metricValue, { color: "#54e98a" }]}>{isConnected ? fmt(p.packCurrentA) : "—"}</Text>
+              <Text style={s.metricUnit}>A</Text>
             </View>
-          </>
-        )}
+          </View>
 
-        {activeTab === "motor" && (
-          <>
-            <Section title="Motor Drive" />
-            <Row label="Speed" value={isConnected ? `${Math.round(p.motorRpm)} RPM` : "—"} color={C.yellow} />
-            <Row label="Load" value={isConnected ? `${Math.round(p.motorLoadPct)} %` : "—"} color={p.motorLoadPct > 80 ? C.red : C.green} />
-            <Row label="Motor Temperature" value={isConnected ? `${fmt(p.motorTempC)} °C` : "—"} color={tempColor(p.motorTempC, 55, 75)} />
-            <Row label="Uptime" value={isConnected && p.uptimeSec > 0 ? fmtUptime(p.uptimeSec) : "—"} />
-            <Row label="Heartbeat Count" value={isConnected ? p.heartbeat.toString() : "—"} last />
-          </>
-        )}
-
-        {activeTab === "dcdc" && (
-          <>
-            <Section title="DC-DC Converter" />
-            <Row label="Output Voltage" value={isConnected ? `${fmt(p.dcdcVoltV)} V` : "—"} color={C.blue} />
-            <Row label="Output Current" value={isConnected ? `${fmt(p.dcdcCurrentA)} A` : "—"} color={C.green} />
-            <Row label="Converter Temp" value={isConnected ? `${fmt(p.dcdcTempC)} °C` : "—"} color={tempColor(p.dcdcTempC)} />
-            <Row label="Input (Pack) Voltage" value={isConnected ? `${fmt(p.packVoltageV)} V` : "—"} />
-            <Row label="Status" value={isConnected && p.dcdcVoltV > 0 ? "Running" : "Standby"} color={isConnected && p.dcdcVoltV > 0 ? C.green : C.muted} last />
-          </>
-        )}
-
-        {activeTab === "charger" && (
-          <>
-            <Section title="Charger" />
-            <Row label="Status" value={isConnected ? p.chrgrStatus : "—"} color={p.chrgrStatus === "Charging" ? C.green : C.yellow} />
-            <Row label="Charger Voltage" value={isConnected ? `${fmt(p.chrgrVoltV)} V` : "—"} color={C.blue} />
-            <Row label="Charger Current" value={isConnected ? `${fmt(p.chrgrCurrentA)} A` : "—"} color={C.green} />
-            <Row label="Battery SOC" value={isConnected ? `${Math.round(p.soc)} %` : "—"} color={socColor(p.soc)} />
-            <Row label="Pack Voltage" value={isConnected ? `${fmt(p.packVoltageV)} V` : "—"} last />
-          </>
-        )}
-
-        {activeTab === "system" && (
-          <>
-            <Section title="Communication" />
-            <Row label="RX Packets" value={isConnected ? p.rxCount.toString() : "—"} color={C.blue} />
-            <Row label="TX Packets" value={isConnected ? p.txCount.toString() : "—"} color={C.green} />
-            <Row label="Data Rate" value={isConnected ? `${p.dataRateKbps.toFixed(2)} KB/s` : "—"} />
-            <Row label="Total Received" value={isConnected ? `${(p.totalRxBytes / 1024).toFixed(1)} KB` : "—"} />
-            <Row label="Heartbeat" value={isConnected ? p.heartbeat.toString() : "—"} last />
-            <Section title="Last Packet" />
-            <View style={s.packetBox}>
-              <Text style={s.packetTime}>{p.lastPacketTime || "—"}</Text>
-              <Text style={s.packetData} numberOfLines={3}>{p.lastPacketData || "No data received"}</Text>
+          {/* Pack Temp */}
+          <View style={s.metricCard}>
+            <Text style={s.metricLabel}>PACK TEMP</Text>
+            <View style={[s.metricDivider, { backgroundColor: "#58e5c2" }]} />
+            <View style={s.metricValueRow}>
+              <Text style={[s.metricValue, { color: "#58e5c2" }]}>{isConnected ? fmt(p.packTempC) : "—"}</Text>
+              <Text style={s.metricUnit}>°C</Text>
             </View>
-          </>
-        )}
+          </View>
 
-        {/* ── Activate / Deactivate ── */}
-        <View style={s.div} />
-        <View style={s.actions}>
-          <Pressable
-            style={[s.actBtn, isOn ? s.actDeactivate : s.actActivate]}
-            onPress={() => toggle(activeTab)}
-          >
-            <MaterialCommunityIcons
-              name={isOn ? "stop-circle-outline" : "play-circle-outline"}
-              size={18}
-              color={isOn ? C.red : C.bg}
-            />
-            <Text style={[s.actTxt, isOn && { color: C.red }]}>
-              {isOn ? `DEACTIVATE ${ac.label.toUpperCase()}` : `ACTIVATE ${ac.label.toUpperCase()}`}
-            </Text>
-          </Pressable>
+          {/* Min Cell */}
+          <View style={s.metricCard}>
+            <Text style={s.metricLabel}>MIN CELL</Text>
+            <View style={[s.metricDivider, { backgroundColor: "#92ccff" }]} />
+            <View style={s.metricValueRow}>
+              <Text style={s.metricValue}>{isConnected ? fmt(p.minV) : "—"}</Text>
+              <Text style={s.metricUnit}>V</Text>
+            </View>
+          </View>
+
+          {/* Max Cell */}
+          <View style={s.metricCard}>
+            <Text style={s.metricLabel}>MAX CELL</Text>
+            <View style={[s.metricDivider, { backgroundColor: "#54e98a" }]} />
+            <View style={s.metricValueRow}>
+              <Text style={s.metricValue}>{isConnected ? fmt(p.maxV) : "—"}</Text>
+              <Text style={s.metricUnit}>V</Text>
+            </View>
+          </View>
+
+          {/* SOC */}
+          <View style={s.metricCard}>
+            <Text style={s.metricLabel}>SOC</Text>
+            <View style={[s.metricDivider, { backgroundColor: "#54e98a" }]} />
+            <View style={s.metricValueRow}>
+              <Text style={[s.metricValue, { color: "#54e98a" }]}>{isConnected ? Math.round(p.soc).toString() : "—"}</Text>
+              <Text style={s.metricUnit}>%</Text>
+            </View>
+          </View>
         </View>
 
-        <View style={{ height: 12 }} />
+        {/* Main Grid - 3 Cards */}
+        <View style={s.mainGrid}>
+          {/* HV + EVCC Card */}
+          <View style={s.mainCard}>
+            <View style={s.cardHeader}>
+              <View style={s.cardHeaderLeft}>
+                <MaterialCommunityIcons name="lightning-bolt" size={16} color="#92ccff" />
+                <Text style={s.cardHeaderText}>HV + EVCC</Text>
+              </View>
+            </View>
+            <View style={s.cardContent}>
+              <View style={s.dataRow}>
+                <Text style={s.dataLabel}>HV BAT+ VOLTAGE</Text>
+                <Text style={s.dataValue}>{isConnected ? fmt(p.batPlusV) : "—"} V</Text>
+              </View>
+              <View style={s.dataRow}>
+                <Text style={s.dataLabel}>HV FC VOLTAGE</Text>
+                <Text style={s.dataValue}>{isConnected ? fmt(p.fcV) : "—"} V</Text>
+              </View>
+              <View style={s.dataRow}>
+                <Text style={s.dataLabel}>HV SC VOLTAGE</Text>
+                <Text style={s.dataValue}>{isConnected ? fmt(p.scV) : "—"} V</Text>
+              </View>
+              <View style={s.dataRow}>
+                <Text style={s.dataLabel}>EVCC MSG</Text>
+                <View style={s.statusRow}>
+                  <View style={[s.statusDot, { backgroundColor: isConnected ? "#54e98a" : "#37393d" }]} />
+                  <Text style={[s.statusText, { color: isConnected ? "#54e98a" : "#64748b" }]}>
+                    {isConnected ? p.evccLastMsgCode : "WAITING"}
+                  </Text>
+                </View>
+              </View>
+              <View style={s.dataRow}>
+                <Text style={s.dataLabel}>INSULATION</Text>
+                <Text style={[s.dataValue, { color: p.faultISO ? "#ffb4ab" : "#54e98a" }]}>
+                  {p.faultISO ? "FAULT" : "OK"}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* DC-DC + Charger Card */}
+          <View style={s.mainCard}>
+            <View style={s.cardHeader}>
+              <View style={s.cardHeaderLeft}>
+                <MaterialCommunityIcons name="ev-station" size={16} color="#54e98a" />
+                <Text style={s.cardHeaderText}>DC-DC + CHARGER</Text>
+              </View>
+            </View>
+            <View style={s.cardContent}>
+              <View style={s.dcdcGrid}>
+                <View style={s.dcdcItem}>
+                  <Text style={s.dcdcLabel}>DCDC OUT</Text>
+                  <Text style={s.dcdcValue}>{isConnected ? fmt(p.dcdcVoltV) : "—"} V</Text>
+                </View>
+                <View style={s.dcdcItem}>
+                  <Text style={s.dcdcLabel}>DCDC LOAD</Text>
+                  <Text style={s.dcdcValue}>{isConnected ? fmt(p.dcdcCurrentA) : "—"} A</Text>
+                </View>
+              </View>
+              <View style={s.chargingStatus}>
+                <Text style={s.chargingStatusText}>CHARGING STATUS</Text>
+                <Text style={s.chargingStatusValue}>
+                  {isConnected ? p.chrgrStatus : "NOT CHARGING"}
+                </Text>
+              </View>
+              <View style={s.statusGrid}>
+                <View style={s.statusItem}>
+                  <View style={[s.statusIndicator, { backgroundColor: isConnected && p.dcdcReady ? "#54e98a" : "#37393d" }]} />
+                  <Text style={[s.statusText, { color: isConnected && p.dcdcReady ? "#e2e2e6" : "#64748b" }]}>READY</Text>
+                </View>
+                <View style={s.statusItem}>
+                  <View style={[s.statusIndicator, { backgroundColor: isConnected && p.dcdcWorking ? "#54e98a" : "#37393d" }]} />
+                  <Text style={[s.statusText, { color: isConnected && p.dcdcWorking ? "#e2e2e6" : "#64748b" }]}>WORKING</Text>
+                </View>
+                <View style={s.statusItem}>
+                  <View style={[s.statusIndicator, { backgroundColor: p.dcdcHvilErr ? "#ffb4ab" : "#37393d" }]} />
+                  <Text style={[s.statusText, { color: p.dcdcHvilErr ? "#ffb4ab" : "#64748b" }]}>HVIL ERR</Text>
+                </View>
+                <View style={s.statusItem}>
+                  <View style={[s.statusIndicator, { backgroundColor: p.dcdcOverTemp ? "#ffb4ab" : "#37393d" }]} />
+                  <Text style={[s.statusText, { color: p.dcdcOverTemp ? "#ffb4ab" : "#64748b" }]}>OVERTEMP</Text>
+                </View>
+              </View>
+            </View>
+          </View>
+
+          {/* Motor + Relays Card */}
+          <View style={s.mainCard}>
+            <View style={s.cardHeader}>
+              <View style={s.cardHeaderLeft}>
+                <MaterialCommunityIcons name="cog" size={16} color="#58e5c2" />
+                <Text style={s.cardHeaderText}>MOTOR + RELAYS</Text>
+              </View>
+            </View>
+            <View style={s.cardContent}>
+              <View style={s.motorSection}>
+                <View style={s.motorHeader}>
+                  <Text style={s.motorLabel}>MOTOR RPM</Text>
+                  <Text style={s.motorValue}>{isConnected ? Math.round(p.motorRpm).toString() : "—"}</Text>
+                </View>
+                <View style={s.progressBar}>
+                  <View style={[s.progressFill, { width: isConnected ? `${Math.min((p.motorRpm / 3000) * 100, 100)}%` : "0%" }]} />
+                </View>
+              </View>
+              <View style={s.motorSection}>
+                <View style={s.motorHeader}>
+                  <Text style={s.motorLabel}>MOTOR TEMP</Text>
+                  <Text style={[s.motorValue, { color: "#58e5c2" }]}>{isConnected ? fmt(p.motorTempC) : "—"}°C</Text>
+                </View>
+                <View style={s.progressBar}>
+                  <View style={[s.progressFill, { backgroundColor: "#58e5c2", width: isConnected ? `${Math.min((p.motorTempC / 80) * 100, 100)}%` : "0%" }]} />
+                </View>
+              </View>
+              <View style={s.relayGrid}>
+                <View style={s.relayItem}>
+                  <Text style={s.relayLabel}>POSITIVE CONTACTOR</Text>
+                  <Text style={[s.relayStatus, { color: p.relayPOS_ENB ? "#54e98a" : "#64748b" }]}>
+                    {p.relayPOS_ENB ? "CLOSED" : "OPEN"}
+                  </Text>
+                </View>
+                <View style={s.relayItem}>
+                  <Text style={s.relayLabel}>NEGATIVE CONTACTOR</Text>
+                  <Text style={[s.relayStatus, { color: p.relayNEG_ENB ? "#54e98a" : "#64748b" }]}>
+                    {p.relayNEG_ENB ? "CLOSED" : "OPEN"}
+                  </Text>
+                </View>
+                <View style={s.relayItem}>
+                  <Text style={s.relayLabel}>FC+ RELAY</Text>
+                  <Text style={[s.relayStatus, { color: p.relayFC ? "#54e98a" : "#64748b" }]}>
+                    {p.relayFC ? "CLOSED" : "OPEN"}
+                  </Text>
+                </View>
+                <View style={s.relayItem}>
+                  <Text style={s.relayLabel}>DC-DC+ RELAY</Text>
+                  <Text style={[s.relayStatus, { color: p.relayDCDC ? "#54e98a" : "#64748b" }]}>
+                    {p.relayDCDC ? "CLOSED" : "OPEN"}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {/* Bottom Grid - 2 Cards */}
+        <View style={s.bottomGrid}>
+          {/* Thermal Efficiency */}
+          <View style={s.bottomCard}>
+            <View style={s.bottomCardHeader}>
+              <View>
+                <Text style={s.bottomCardTitle}>THERMAL EFFICIENCY</Text>
+                <Text style={s.bottomCardSubtitle}>LIVE COOLANT FLOW DIAGRAM</Text>
+              </View>
+              <MaterialCommunityIcons name="snowflake" size={20} color="#54e98a" />
+            </View>
+            <View style={s.thermalContent}>
+              <View style={s.thermalDisplay}>
+                <Text style={s.thermalValue}>
+                  {isConnected ? `${Math.round(95 + (p.soc / 100) * 4)}%` : "—"}
+                </Text>
+                <Text style={s.thermalLabel}>
+                  {isConnected ? (p.packTempC < 50 ? "OPTIMAL FLOW" : "ELEVATED TEMP") : "NO DATA"}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* BMS Faults */}
+          <View style={s.bottomCard}>
+            <View style={s.bottomCardHeader}>
+              <View>
+                <Text style={s.bottomCardTitle}>BMS FAULTS</Text>
+                <Text style={s.bottomCardSubtitle}>ACTIVE SYSTEM DIAGNOSTICS</Text>
+              </View>
+              <MaterialCommunityIcons name="alert" size={20} color="#ffb4ab" />
+            </View>
+            <View style={s.faultsList}>
+              {p.faultUV && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitle}>CRITICAL: UNDERVOLTAGE</Text>
+                    <Text style={s.faultDescription}>CELL UNDERVOLTAGE DETECTED</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+              {p.faultOV && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitle}>CRITICAL: OVERVOLTAGE</Text>
+                    <Text style={s.faultDescription}>CELL OVERVOLTAGE DETECTED</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+              {p.faultOTC && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitle}>WARNING: OVER TEMPERATURE CHARGE</Text>
+                    <Text style={s.faultDescription}>PACK TEMP TOO HIGH FOR CHARGING</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+              {p.faultUTC && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitle}>WARNING: OVER TEMPERATURE DISCHARGE</Text>
+                    <Text style={s.faultDescription}>PACK TEMP TOO HIGH FOR DISCHARGE</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+              {p.faultOCD1 && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitle}>CRITICAL: OVER CURRENT DISCHARGE 1</Text>
+                    <Text style={s.faultDescription}>DISCHARGE CURRENT LIMIT EXCEEDED</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+              {p.faultOCD2 && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitle}>CRITICAL: OVER CURRENT DISCHARGE 2</Text>
+                    <Text style={s.faultDescription}>DISCHARGE CURRENT LIMIT EXCEEDED</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+              {p.faultSC && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitle}>CRITICAL: SHORT CIRCUIT</Text>
+                    <Text style={s.faultDescription}>SHORT CIRCUIT DETECTED</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+              {p.faultISO && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitle}>CRITICAL: INSULATION FAULT</Text>
+                    <Text style={s.faultDescription}>INSULATION RESISTANCE TOO LOW</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+              {!isConnected && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitle}>INFO: NO CONNECTION</Text>
+                    <Text style={s.faultDescription}>WAITING FOR USB DEVICE</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+              {isConnected && !p.faultUV && !p.faultOV && !p.faultOTC && !p.faultUTC && !p.faultOCD1 && !p.faultOCD2 && !p.faultSC && !p.faultISO && (
+                <View style={s.faultItem}>
+                  <View style={s.faultContent}>
+                    <Text style={s.faultTitleInfo}>INFO: SYSTEM NORMAL</Text>
+                    <Text style={s.faultDescription}>ALL SYSTEMS OPERATIONAL</Text>
+                  </View>
+                  <Text style={s.faultTime}>{new Date().toLocaleTimeString()}</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        </View>
+
+        <View style={{ height: 20 }} />
       </ScrollView>
 
       <BottomNav />
@@ -352,56 +500,372 @@ export default function DiagnosticsScreen() {
 }
 
 const s = StyleSheet.create({
-  root:   { flex: 1, backgroundColor: C.bg, flexDirection: "column" },
-  body:   { padding: 12, gap: 0 },
+  root:   { flex: 1, backgroundColor: "#111316", flexDirection: "column" },
+  body:   { padding: 16, gap: 16 },
 
-  connBanner: {
-    flexDirection: "row", alignItems: "center", gap: 10,
-    borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10,
+  
+  // Top Metrics Row
+  topMetricsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 16,
+  },
+  metricCard: {
+    flex: 1,
+    minWidth: "30%",
+    backgroundColor: "#1C1F23",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderRadius: 8,
+    padding: 12,
+  },
+  metricLabel: {
+    color: "#bbcbbb",
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.6,
+    marginBottom: 8,
+  },
+  metricDivider: {
+    height: 2,
+    width: 32,
+    marginBottom: 8,
+    borderRadius: 1,
+  },
+  metricValueRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 4,
+  },
+  metricValue: {
+    color: "#e2e2e6",
+    fontSize: 24,
+    fontWeight: "600",
+  },
+  metricUnit: {
+    color: "#bbcbbb",
+    fontSize: 12,
+  },
+
+  // Main Grid
+  mainGrid: {
+    flexDirection: "row",
+    gap: 16,
+    marginBottom: 16,
+  },
+  mainCard: {
+    flex: 1,
+    backgroundColor: "#1C1F23",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderRadius: 8,
+  },
+  cardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.05)",
+  },
+  cardHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  cardHeaderText: {
+    color: "#e2e2e6",
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.8,
+  },
+  cardContent: {
+    padding: 12,
+  },
+
+  // Data Rows
+  dataRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.05)",
+  },
+  dataLabel: {
+    color: "#bbcbbb",
+    fontSize: 11,
+    fontWeight: "500",
+  },
+  dataValue: {
+    color: "#e2e2e6",
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  statusText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+
+  // DC-DC Section
+  dcdcGrid: {
+    flexDirection: "row",
+    gap: 12,
+    marginBottom: 16,
+  },
+  dcdcItem: {
+    flex: 1,
+    backgroundColor: "#1e2023",
+    padding: 12,
+    borderRadius: 6,
+  },
+  dcdcLabel: {
+    color: "#bbcbbb",
+    fontSize: 10,
+    marginBottom: 4,
+  },
+  dcdcValue: {
+    color: "#e2e2e6",
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  chargingStatus: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 180, 171, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 180, 171, 0.2)",
+    padding: 12,
+    borderRadius: 6,
+    marginBottom: 16,
+  },
+  chargingStatusText: {
+    color: "#ffb4ab",
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.6,
+  },
+  chargingStatusValue: {
+    color: "#ffb4ab",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+
+  // Status Grid
+  statusGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  statusItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minWidth: "45%",
+  },
+  statusIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+
+  // Motor Section
+  motorSection: {
+    marginBottom: 16,
+  },
+  motorHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  motorLabel: {
+    color: "#bbcbbb",
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.6,
+  },
+  motorValue: {
+    color: "#e2e2e6",
+    fontSize: 20,
+    fontWeight: "600",
+  },
+  progressBar: {
+    height: 4,
+    backgroundColor: "#282a2d",
+    borderRadius: 2,
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: "100%",
+    backgroundColor: "#54e98a",
+    borderRadius: 2,
+  },
+
+  // Relay Grid
+  relayGrid: {
+    gap: 8,
+  },
+  relayItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "#1e2023",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.05)",
+    padding: 8,
+    borderRadius: 4,
+  },
+  relayLabel: {
+    color: "#bbcbbb",
+    fontSize: 11,
+  },
+  relayStatus: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  // Bottom Grid
+  bottomGrid: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  fieldNavigationCard: {
+    backgroundColor: "#1C1F23",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#37393d",
+    padding: 16,
+    marginBottom: 16,
+  },
+  fieldNavHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     marginBottom: 12,
   },
-  connDot:   { width: 8, height: 8, borderRadius: 4 },
-  connTitle: { fontSize: 11, fontWeight: "700" },
-  connSub:   { color: C.muted, fontSize: 9, marginTop: 2 },
-
-  tabRow: { flexDirection: "row", gap: 5, marginBottom: 10 },
-  tab: {
-    flex: 1, flexDirection: "column", alignItems: "center", justifyContent: "center",
-    paddingVertical: 7, borderRadius: 8, borderWidth: 1, borderColor: C.border,
-    backgroundColor: C.panel, gap: 2,
+  fieldNavTitle: {
+    color: "#e2e2e6",
+    fontSize: 14,
+    fontWeight: "700",
+    letterSpacing: 0.5,
   },
-  tabLbl: { fontSize: 8, fontWeight: "700", letterSpacing: 0.3 },
-
-  badge: {
-    flexDirection: "row", alignItems: "center", gap: 8,
-    borderRadius: 9, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10,
-    marginBottom: 12,
+  fieldNavContent: {
+    alignItems: "center",
   },
-  badgeTitle:  { color: C.text, fontSize: 13, fontWeight: "700" },
-  badgeDot:    { width: 7, height: 7, borderRadius: 4 },
-  badgeState:  { fontSize: 11, fontWeight: "800", letterSpacing: 0.5 },
-
-  cardRow: { flexDirection: "row", gap: 6 },
-
-  div: { height: 1, backgroundColor: C.border, marginVertical: 14 },
-
-  dotGrid: {
-    flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 4,
+  googleMapsButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#0f172a",
+    borderWidth: 1,
+    borderColor: "#37393d",
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    width: "100%",
+  },
+  googleMapsText: {
+    color: "#e2e2e6",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  bottomCard: {
+    flex: 1,
+    backgroundColor: "#1C1F23",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderRadius: 8,
+    padding: 20,
+    minHeight: 200,
+  },
+  bottomCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 20,
+  },
+  bottomCardTitle: {
+    color: "#e2e2e6",
+    fontSize: 16,
+    fontWeight: "500",
+    letterSpacing: 0.2,
+    marginBottom: 4,
+  },
+  bottomCardSubtitle: {
+    color: "#bbcbbb",
+    fontSize: 10,
+    fontWeight: "600",
+    letterSpacing: 0.6,
   },
 
-  packetBox: {
-    backgroundColor: C.card, borderRadius: 8, borderWidth: 1,
-    borderColor: C.border, padding: 10, gap: 4,
+  // Thermal Content
+  thermalContent: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
   },
-  packetTime: { color: C.dim, fontSize: 9 },
-  packetData: { color: "rgba(140,220,170,1)", fontSize: 10, fontFamily: "monospace" },
+  thermalDisplay: {
+    alignItems: "center",
+  },
+  thermalValue: {
+    color: "rgba(84, 233, 138, 0.8)",
+    fontSize: 48,
+    fontWeight: "900",
+    marginBottom: 8,
+  },
+  thermalLabel: {
+    color: "#bbcbbb",
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.8,
+  },
 
-  actions: { gap: 8 },
-  actBtn: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    gap: 8, borderRadius: 10, paddingVertical: 13, borderWidth: 1,
+  // Faults List
+  faultsList: {
+    gap: 8,
   },
-  actActivate:   { backgroundColor: C.green, borderColor: C.green },
-  actDeactivate: { backgroundColor: "rgba(255,80,60,0.08)", borderColor: "rgba(255,80,60,0.4)" },
-  actTxt: { color: C.bg, fontSize: 13, fontWeight: "800", letterSpacing: 0.5 },
+  faultItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    padding: 12,
+    borderRadius: 6,
+  },
+  faultContent: {
+    flex: 1,
+  },
+  faultTitle: {
+    color: "#ffb4ab",
+    fontSize: 11,
+    fontWeight: "700",
+    marginBottom: 2,
+  },
+  faultTitleInfo: {
+    color: "#e2e2e6",
+    fontSize: 11,
+    fontWeight: "700",
+    marginBottom: 2,
+  },
+  faultDescription: {
+    color: "#bbcbbb",
+    fontSize: 10,
+  },
+  faultTime: {
+    color: "rgba(255, 255, 255, 0.5)",
+    fontSize: 10,
+    fontFamily: "monospace",
+  },
 });

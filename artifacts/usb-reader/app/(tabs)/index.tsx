@@ -1,29 +1,34 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View, Dimensions, Linking } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
-import Svg, { Path, Circle, ClipPath, Defs, LinearGradient, Stop, Text as SvgText } from "react-native-svg";
+import Svg, { Path, Circle, ClipPath, Defs, LinearGradient, Stop, Text as SvgText, G } from "react-native-svg";
 import { useUsb } from "@/context/UsbContext";
 import { useParsedUsbData } from "@/hooks/useParsedUsbData";
+import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
+import { UsbConnectionBar } from "@/components/UsbConnectionBar";
+import MotorIcon from "../components/MotorIcon";
 
-// ─── Theme ────────────────────────────────────────────────────
+import { Colors, Typography, Spacing, Border } from "@/theme";
+
+// ─── Theme alias (maps old names → design system) ─────────────
 const T = {
-  bg:      "rgba(21,25,27,1)",
-  panel:   "rgba(26,30,32,1)",
-  card:    "rgba(32,36,38,1)",
-  border:  "rgba(51,56,58,1)",
-  text:    "rgba(220,221,221,1)",
-  muted:   "rgba(120,122,122,1)",
-  dim:     "rgba(60,62,62,1)",
-  green:   "#6EDCA1",
-  greenDk: "rgba(40,60,48,1)",
-  yellow:  "#FFC832",
-  orange:  "#FF9811",
-  red:     "#FF503C",
-  blue:    "#50B4FF",
-  blueDk:  "#0052B4",
+  bg:      Colors.background,
+  panel:   Colors.surfaceContainerLow,
+  card:    Colors.surfaceContainer,
+  border:  Colors.outlineVariant,
+  text:    Colors.onSurface,
+  muted:   Colors.onSurfaceVariant,
+  dim:     Colors.dim,
+  green:   Colors.tertiary,
+  greenDk: Colors.onTertiaryContainer,
+  yellow:  Colors.primaryFixedDim,
+  orange:  Colors.primary,
+  red:     Colors.error,
+  blue:    Colors.secondary,
+  blueDk:  Colors.onSecondary,
 };
 
 // ─── Helpers ─────────────────────────────────────────────────
@@ -41,10 +46,10 @@ function fmtUptime(s: number): string {
 
 // ─── Speedometer (exact reference style) ─────────────────────
 function Speedometer({ value, max, label, unit }: { value: number; max: number; label: string; unit: string }) {
-  const SIZE = 148;
+  const SIZE = 120;
   const pct = Math.min(value / max, 1);
   const needleAngle = -60 + pct * 120;
-  const cx = 160, cy = 160, nr = 78;
+  const cx = 130, cy = 130, nr = 65;
   const rad = ((needleAngle - 90) * Math.PI) / 180;
   const tip = { x: cx + nr * Math.cos(rad), y: cy + nr * Math.sin(rad) };
   const b1  = { x: cx + 5 * Math.cos(rad + Math.PI / 2), y: cy + 5 * Math.sin(rad + Math.PI / 2) };
@@ -53,13 +58,13 @@ function Speedometer({ value, max, label, unit }: { value: number; max: number; 
   return (
     <View style={{ alignItems: "center" }}>
       <Text style={ss.label}>{label}</Text>
-      <Svg width={SIZE} height={SIZE} viewBox="0 0 320 320">
-        <Path d="M90,40 L160,160 L230,40 Z" fill="#FF9811" />
-        <Path d="M160,160 L0,160 L90,40 Z" fill="#FFDA44" />
-        <Path d="M160,160 L320,160 L230,40 Z" fill="#FF5023" />
-        <Path d="M160,0 L160,40 C226.273,40 280,93.726 280,160 C280,226.274 226.273,280 160,280 L160,320 C248.365,320 320,248.366 320,160 C320,71.635 248.365,0 160,0 Z" fill="#006DF0" />
-        <Path d="M40,160 C40,93.726 93.727,40 160,40 L160,0 C71.635,0 0,71.634 0,160 C0,248.366 71.635,320 160,320 L160,280 C93.727,280 40,226.274 40,160 Z" fill="#0052B4" />
-        <Circle cx={160} cy={160} r={82} fill="rgba(21,25,27,1)" />
+      <Svg width={SIZE} height={SIZE} viewBox="0 0 260 260">
+        <Path d="M73,32 L130,130 L187,32 Z" fill="#FF9811" />
+        <Path d="M130,130 L0,130 L73,32 Z" fill="#FFDA44" />
+        <Path d="M130,130 L260,130 L187,32 Z" fill="#FF5023" />
+        <Path d="M130,0 L130,32 C183.518,32 226,74.482 226,130 C226,185.518 183.518,228 130,228 L130,260 C202.091,260 260,202.091 260,130 C260,57.909 202.091,0 130,0 Z" fill="#006DF0" />
+        <Path d="M32,130 C32,74.482 74.482,32 130,32 L130,0 C57.909,0 0,57.909 0,130 C0,202.091 57.909,260 130,260 L130,228 C74.482,228 32,185.518 32,130 Z" fill="#0052B4" />
+        <Circle cx={130} cy={130} r={67} fill="rgba(21,25,27,1)" />
         <Defs>
           <LinearGradient id="ng" x1="0" y1="0" x2="1" y2="0">
             <Stop offset="0" stopColor={T.green} />
@@ -67,11 +72,11 @@ function Speedometer({ value, max, label, unit }: { value: number; max: number; 
           </LinearGradient>
         </Defs>
         <Path d={`M${tip.x},${tip.y} L${b1.x},${b1.y} L${b2.x},${b2.y}Z`} fill="url(#ng)" />
-        <Circle cx={160} cy={160} r={10} fill="rgba(21,25,27,1)" stroke={T.green} strokeWidth={2} />
-        <SvgText x={160} y={204} textAnchor="middle" fill={T.text} fontSize={34} fontWeight="bold">
+        <Circle cx={130} cy={130} r={8} fill="rgba(21,25,27,1)" stroke={T.green} strokeWidth={2} />
+        <SvgText x={130} y={166} textAnchor="middle" fill={T.text} fontSize={28} fontWeight="bold">
           {value < 10 ? value.toFixed(1) : Math.round(value).toString()}
         </SvgText>
-        <SvgText x={160} y={224} textAnchor="middle" fill={T.muted} fontSize={14}>{unit}</SvgText>
+        <SvgText x={130} y={182} textAnchor="middle" fill={T.muted} fontSize={12}>{unit}</SvgText>
       </Svg>
     </View>
   );
@@ -229,8 +234,8 @@ function Bar({ pct, color }: { pct: number; color: string }) {
   );
 }
 const bar = StyleSheet.create({
-  track: { height: 5, backgroundColor: T.border, borderRadius: 3, overflow: "hidden" },
-  fill: { height: "100%", borderRadius: 3 },
+  track: { height: 4, backgroundColor: T.border, borderRadius: 2, overflow: "hidden", marginVertical: 2 },
+  fill: { height: "100%", borderRadius: 2 },
 });
 
 // ─── Battery SVG ─────────────────────────────────────────────
@@ -256,6 +261,7 @@ function BatteryIcon({ soc, size }: { soc: number; size: number }) {
   );
 }
 
+
 // ─── Stat row ─────────────────────────────────────────────────
 function StatRow({ icon, label, value, color, unit }: { icon: React.ComponentProps<typeof MaterialCommunityIcons>["name"]; label: string; value: string; color?: string; unit?: string }) {
   return (
@@ -267,17 +273,46 @@ function StatRow({ icon, label, value, color, unit }: { icon: React.ComponentPro
   );
 }
 const sr = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: "rgba(35,39,41,1)" },
-  label: { flex: 1, color: T.muted, fontSize: 10 },
-  value: { color: T.text, fontSize: 11, fontWeight: "700" },
-  unit: { color: T.muted, fontSize: 9, fontWeight: "400" },
+  row: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 3, borderBottomWidth: 1, borderBottomColor: "rgba(35,39,41,1)" },
+  label: { flex: 1, color: T.muted, fontSize: 8 },
+  value: { color: T.text, fontSize: 9, fontWeight: "700" },
+  unit: { color: T.muted, fontSize: 7, fontWeight: "400" },
 });
+
+// ─── Responsive Design Hook ───────────────────────────────────
+function useResponsiveLayout() {
+  const [screenData, setScreenData] = useState(Dimensions.get('window'));
+  
+  useEffect(() => {
+    const onChange = (result: any) => {
+      setScreenData(result.window);
+    };
+    const subscription = Dimensions.addEventListener('change', onChange);
+    return () => subscription?.remove();
+  }, []);
+  
+  const { width, height } = screenData;
+  const isSmallScreen = width < 768;
+  const isMediumScreen = width >= 768 && width < 1024;
+  const isLargeScreen = width >= 1024;
+  
+  return {
+    width,
+    height,
+    isSmallScreen,
+    isMediumScreen,
+    isLargeScreen,
+    shouldStackRight: width < 900,
+    rightSectionWidth: isSmallScreen ? '100%' : isMediumScreen ? 350 : 400
+  };
+}
 
 // ─── MAIN DASHBOARD ──────────────────────────────────────────
 export default function DashboardScreen() {
   const { selectedDevice, connectionStatus, packets, quickConnect, disconnectDevice } = useUsb();
   const parsed = useParsedUsbData(packets);
   const isConnected = connectionStatus === "connected";
+  const { isSmallScreen, isMediumScreen, shouldStackRight } = useResponsiveLayout();
 
   const [activeGear, setActiveGear]   = useState("N");
   const [heading, setHeading]         = useState(248);
@@ -296,13 +331,6 @@ export default function DashboardScreen() {
     );
   }, []);
 
-  // Slowly rotate heading when connected
-  useEffect(() => {
-    if (!isConnected) return;
-    const t = setInterval(() => setHeading((h) => (h + (Math.random() * 2 - 1) + 360) % 360), 1500);
-    return () => clearInterval(t);
-  }, [isConnected]);
-
   // Session timer
   useEffect(() => {
     if (!isConnected) { setSessionSec(0); return; }
@@ -314,6 +342,31 @@ export default function DashboardScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     if (isConnected) disconnectDevice();
     else quickConnect();
+  };
+
+  // Google Maps API integration
+  const openGoogleMaps = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    // Use current GPS coordinates or fallback to device location
+    const latitude = lat;
+    const longitude = lng;
+    
+    try {
+      // Try to open in Google Maps app with directions
+      const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${latitude},${longitude}`;
+      const supported = await Linking.canOpenURL(directionsUrl);
+      if (supported) {
+        await Linking.openURL(directionsUrl);
+      } else {
+        // Fallback to web version
+        await Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`);
+      }
+    } catch (error) {
+      console.error("Error opening Google Maps:", error);
+      // Final fallback to basic Google Maps
+      await Linking.openURL("https://maps.google.com");
+    }
   };
 
   // Derive display values from parsed real data
@@ -336,6 +389,7 @@ export default function DashboardScreen() {
 
   return (
     <View style={s.root}>
+      <Header />
       {/* ── Status bar ── */}
       <View style={s.statusBar}>
         <Text style={s.sbTime}>{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</Text>
@@ -351,21 +405,14 @@ export default function DashboardScreen() {
           <Text style={[s.gpsTxt, { color: gpsFix ? T.green : T.red }]}>{gpsFix ? "GPS OK" : "No Fix"}</Text>
         </View>
 
-        {/* USB connect / disconnect */}
-        <Pressable
-          style={[s.usbBtn, { backgroundColor: isConnected ? "rgba(110,220,161,0.12)" : "rgba(255,80,60,0.1)", borderColor: isConnected ? "rgba(110,220,161,0.45)" : "rgba(255,80,60,0.35)" }]}
-          onPress={handleToggleUsb}
-        >
-          <MaterialCommunityIcons name={isConnected ? "link" : "link-off"} size={13} color={isConnected ? T.green : T.red} />
-          <Text style={[s.usbTxt, { color: isConnected ? T.green : T.red }]}>{isConnected ? "ONLINE" : "CONNECT"}</Text>
-        </Pressable>
+        {/* Shared USB connection bar (compact) */}
+        <UsbConnectionBar compact />
       </View>
 
-      {/* ── Four panels ── */}
-      <ScrollView horizontal style={{ flex: 1 }} contentContainerStyle={s.body} showsHorizontalScrollIndicator={false}>
-
-        {/* ══ LEFT: Speed + Gear + Heading ══ */}
-        <View style={s.leftPanel}>
+      {/* ── Left, Center, Right Sections ── */}
+      <View style={s.mainContainer}>
+        {/* ══ LEFT SECTION: Speed + Gear + Heading ══ */}
+        <View style={s.leftSection}>
           <View style={s.sec}>
             <Speedometer value={dataRate} max={12} label="Data Rate" unit="KB/s" />
           </View>
@@ -379,8 +426,8 @@ export default function DashboardScreen() {
           </View>
         </View>
 
-        {/* ══ CENTER: Field Navigation + Map + Last packet ══ */}
-        <View style={s.centerPanel}>
+        {/* ══ CENTER SECTION: Field Navigation + Map + Stream ══ */}
+        <View style={s.centerSection}>
           {/* Nav header */}
           <View style={s.navHead}>
             <View style={s.navTitleRow}>
@@ -389,6 +436,10 @@ export default function DashboardScreen() {
               <View style={[s.badge2, { backgroundColor: isConnected ? "rgba(110,220,161,0.12)" : "rgba(255,80,60,0.08)", borderColor: isConnected ? "rgba(110,220,161,0.4)" : "rgba(255,80,60,0.3)" }]}>
                 <Text style={[s.badge2Txt, { color: isConnected ? T.green : T.red }]}>{isConnected ? "● LIVE" : "○ OFFLINE"}</Text>
               </View>
+              <Pressable style={s.mapsBtn} onPress={openGoogleMaps}>
+                <MaterialCommunityIcons name="google-maps" size={14} color="#4285F4" />
+                <Text style={s.mapsBtnTxt}>Maps</Text>
+              </Pressable>
             </View>
             <View style={s.chipRow}>
               {[`LAT ${lat.toFixed(5)}`, `LNG ${lng.toFixed(5)}`, `HDG ${Math.round(heading)}°`, `PKT/s ${pktRate}`].map((c) => (
@@ -417,93 +468,123 @@ export default function DashboardScreen() {
           </View>
         </View>
 
-        {/* ══ BATTERY PANEL ══ */}
-        <View style={s.battPanel}>
-          <Text style={s.panelTitle}>Battery</Text>
+        {/* ══ RIGHT SECTION: Responsive Layout ══ */}
+        <View style={[s.rightSection, shouldStackRight && { flexDirection: 'column', minWidth: 160, maxWidth: 200 }]}>
+          {/* Battery Panel */}
+          <View style={[s.rightTopPart, shouldStackRight && { marginBottom: 8, marginRight: 0 }]}>
+            <View style={s.battPanel}>
+              <Text style={s.panelTitle}>Battery</Text>
 
-          {/* Big SOC */}
-          <Text style={[s.socBig, { color: socColor }]}>{soc}<Text style={s.socUnit}>%</Text></Text>
-          <Bar pct={socBarPct} color={socColor} />
-          <Text style={s.socLabel}>State of Charge</Text>
+              {/* Big SOC */}
+              <Text style={[s.socBig, { color: socColor }]}>{soc}<Text style={s.socUnit}>%</Text></Text>
+              <Bar pct={socBarPct} color={socColor} />
+              <Text style={s.socLabel}>State of Charge</Text>
 
-          <View style={{ height: 8 }} />
+              <View style={{ height: 6 }} />
 
-          <View style={s.battRow}>
-            <BatteryIcon soc={soc} size={28} />
-            <View style={{ flex: 1, gap: 6 }}>
-              <View>
-                <Text style={s.battVal}>{voltage} V</Text>
-                <Text style={s.battSub}>Pack Voltage</Text>
+              <View style={s.battRow}>
+                <View style={{ flexDirection: "column", alignItems: "center", gap: 4 }}>
+                  <BatteryIcon soc={soc} size={shouldStackRight ? 136 : 142} />
+                  <MaterialCommunityIcons name="lightning-bolt" size={shouldStackRight ? 16 : 20} color={socColor} />
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginTop: 4 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                      <MaterialCommunityIcons name="flash" size={14} color={T.blue} />
+                      <View>
+                        <Text style={s.battVal}>{voltage} V</Text>
+                        <Text style={s.battSub}>Pack Voltage</Text>
+                      </View>
+                    </View>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                      <MaterialCommunityIcons name="current-ac" size={14} color={T.green} />
+                      <View>
+                        <Text style={s.battVal}>{current} A</Text>
+                        <Text style={s.battSub}>Current</Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
               </View>
-              <View>
-                <Text style={s.battVal}>{current} A</Text>
-                <Text style={s.battSub}>Current</Text>
+
+              <View style={s.divH} />
+
+              <StatRow icon="thermometer" label="Pack Temp" value={packTemp} color={parseFloat(packTemp) > 45 ? T.orange : T.blue} unit="°C" />
+              <Bar pct={tempBarPct} color={parseFloat(packTemp) > 45 ? T.orange : T.blue} />
+
+              <View style={{ height: 4 }} />
+              <StatRow icon="database" label="RX Total" value={fmtBytes(rxBytes)} color={T.blue} />
+              <StatRow icon="upload" label="TX Total" value={fmtBytes(txBytes)} color={T.green} />
+
+              <View style={s.divH} />
+
+              <View style={s.rangeRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.rangeVal}>{fmtBytes(parsed.totalRxBytes)}</Text>
+                  <Text style={s.rangeLbl}>Total Received</Text>
+                </View>
+                <View style={s.rangeDiv} />
+                <View style={{ flex: 1, paddingLeft: 8 }}>
+                  <Text style={s.rangeVal}>{fmtUptime(parsed.uptimeSec || sessionSec)}</Text>
+                  <Text style={s.rangeLbl}>Uptime</Text>
+                </View>
               </View>
             </View>
           </View>
 
-          <View style={s.divH} />
+          {/* Power Panel */}
+          <View style={[s.rightBottomPart, shouldStackRight && { marginLeft: 0 }]}>
+            <View style={s.powerPanel}>
+              <Text style={s.panelTitle}>Motor & Power</Text>
 
-          <StatRow icon="thermometer" label="Pack Temp" value={packTemp} color={parseFloat(packTemp) > 45 ? T.orange : T.blue} unit="°C" />
-          <Bar pct={tempBarPct} color={parseFloat(packTemp) > 45 ? T.orange : T.blue} />
+ {/* Motor Load & Data Rate in row format like battery */}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginTop: 4 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                  <MaterialCommunityIcons name="gauge" size={14} color={loadColor} />
+                  <View>
+                    <Text style={s.battVal}>{Math.round(motorLoad)}%</Text>
+                    <Text style={s.battSub}>Motor Load</Text>
+                  </View>
+                </View>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                  <MaterialCommunityIcons name="speedometer" size={14} color={T.blue} />
+                  <View>
+                    <Text style={s.battVal}>{dataRate.toFixed(2)} KB/s</Text>
+                    <Text style={s.battSub}>Data Rate</Text>
+                  </View>
+                </View>
+              </View>
 
-          <View style={{ height: 6 }} />
-          <StatRow icon="database" label="RX Total" value={fmtBytes(rxBytes)} color={T.blue} />
-          <StatRow icon="upload" label="TX Total" value={fmtBytes(txBytes)} color={T.green} />
+              {/* Big RPM with Motor Icon */}
+              <View style={{ flexDirection: "column", alignItems: "center", marginBottom: 8 }}>
+                <MotorIcon 
+                  motorRpm={motorRpm}
+                  motorLoad={motorLoad}
+                  motorTemp={motorTemp}
+                  isRunning={motorRpm > 0}
+                />
+                <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 4, marginTop: 6 }}>
+                  <Text style={s.powerVal}>{motorRpm}</Text>
+                  <Text style={s.powerUnit}>RPM</Text>
+                </View>
+                <Text style={s.powerSub}>Motor Speed</Text>
+              </View>
 
-          <View style={s.divH} />
+              <View style={{ height: 6 }} />
 
-          <View style={s.rangeRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.rangeVal}>{fmtBytes(parsed.totalRxBytes)}</Text>
-              <Text style={s.rangeLbl}>Total Received</Text>
-            </View>
-            <View style={s.rangeDiv} />
-            <View style={{ flex: 1, paddingLeft: 10 }}>
-              <Text style={s.rangeVal}>{fmtUptime(parsed.uptimeSec || sessionSec)}</Text>
-              <Text style={s.rangeLbl}>Uptime</Text>
+             
+              <View style={s.divH} />
+
+              <StatRow icon="thermometer" label="Motor Temp" value={`${motorTemp}°C`} color={motorTemp > "60" ? T.red : T.orange} />
+              <Bar pct={parseFloat(motorTemp) / 120 * 100} color={motorTemp > "60" ? T.red : T.orange} />
+
+              <View style={{ height: 4 }} />
+              <StatRow icon="flash" label="HV Voltage" value={`${voltage} V`} color={T.blue} />
+              <StatRow icon="current-ac" label="Pack Current" value={`${current} A`} color={T.green} />
+              <StatRow icon="counter" label="Heartbeat" value={parsed.heartbeat.toString()} color={T.muted} />
+              <StatRow icon="clock-outline" label="Session" value={fmtUptime(sessionSec)} color={T.muted} />
             </View>
           </View>
         </View>
-
-        {/* ══ POWER / MOTOR PANEL ══ */}
-        <View style={s.powerPanel}>
-          <Text style={s.panelTitle}>Motor & Power</Text>
-
-          {/* Big RPM */}
-          <View style={s.powerBig}>
-            <Text style={s.powerVal}>{motorRpm}</Text>
-            <Text style={s.powerUnit}>RPM</Text>
-          </View>
-          <Text style={s.powerSub}>Motor Speed</Text>
-
-          <View style={{ height: 10 }} />
-
-          {/* Motor load bar */}
-          <View style={s.loadRow}>
-            <Text style={s.loadLabel}>Motor Load</Text>
-            <Text style={[s.loadPct, { color: loadColor }]}>{Math.round(motorLoad)}%</Text>
-          </View>
-          <Bar pct={motorLoad} color={loadColor} />
-
-          <View style={{ height: 6 }} />
-
-          <View style={s.loadRow}>
-            <Text style={s.loadLabel}>Data Rate</Text>
-            <Text style={[s.loadPct, { color: T.blue }]}>{dataRate.toFixed(2)} KB/s</Text>
-          </View>
-          <Bar pct={(dataRate / 12) * 100} color={T.blue} />
-
-          <View style={s.divH} />
-
-          <StatRow icon="engine" label="Motor RPM" value={motorRpm.toString()} color={T.yellow} />
-          <StatRow icon="thermometer" label="Motor Temp" value={`${motorTemp}°C`} color={motorTemp > "60" ? T.red : T.orange} />
-          <StatRow icon="flash" label="HV Voltage" value={`${voltage} V`} color={T.blue} />
-          <StatRow icon="current-ac" label="Pack Current" value={`${current} A`} color={T.green} />
-          <StatRow icon="counter" label="Heartbeat" value={parsed.heartbeat.toString()} color={T.muted} />
-          <StatRow icon="clock-outline" label="Session" value={fmtUptime(sessionSec)} color={T.muted} />
-        </View>
-      </ScrollView>
+      </View>
 
       {/* ── Bottom Nav ── */}
       <BottomNav />
@@ -514,57 +595,67 @@ export default function DashboardScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: T.bg, flexDirection: "column" },
 
-  statusBar: { height: 34, flexDirection: "row", alignItems: "center", paddingHorizontal: 12, gap: 7, borderBottomWidth: 1, borderBottomColor: T.border, backgroundColor: T.panel },
-  sbTime:    { color: T.muted, fontSize: 11, fontWeight: "600" },
-  sbTitle:   { color: T.text, fontSize: 12, fontWeight: "700", flex: 1 },
-  sbVid:     { color: T.blue, fontSize: 9, fontWeight: "600" },
-  gpsBadge:  { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, borderWidth: 1 },
+  statusBar: { height: 36, flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.gutter, gap: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Border.color, backgroundColor: Colors.surfaceContainerLowest },
+  sbTime:    { ...Typography.labelCaps, color: T.muted, fontSize: 10 },
+  sbTitle:   { ...Typography.labelCaps, color: T.text, fontSize: 11, flex: 1 },
+  sbVid:     { ...Typography.labelCaps, color: T.blue, fontSize: 8 },
+  gpsBadge:  { flexDirection: "row", alignItems: "center", gap: Spacing.xs, paddingHorizontal: Spacing.sm, paddingVertical: 2, borderWidth: Border.width },
   gpsDot:    { width: 5, height: 5, borderRadius: 3 },
-  gpsTxt:    { fontSize: 9, fontWeight: "700", letterSpacing: 0.3 },
-  usbBtn:    { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1 },
-  usbTxt:    { fontSize: 9, fontWeight: "800", letterSpacing: 0.5 },
+  gpsTxt:    { ...Typography.labelCaps, fontSize: 8 },
+  usbBtn:    { flexDirection: "row", alignItems: "center", gap: Spacing.xs, paddingHorizontal: Spacing.sm, paddingVertical: 3, borderWidth: Border.width },
+  usbTxt:    { ...Typography.labelCaps, fontSize: 8 },
 
-  body: { flexDirection: "row", flexGrow: 1 },
-  divH: { height: 1, backgroundColor: T.border, marginVertical: 6 },
+  mainContainer: { flex: 1, flexDirection: "row", padding: Spacing.xs },
+
+  leftSection: { flex: 1, minWidth: 140, maxWidth: 160, borderRightWidth: Border.width, borderRightColor: Border.color, padding: Spacing.sm, backgroundColor: T.panel },
+
+  centerSection: { flex: 2, minWidth: 200, flexDirection: "column", borderRightWidth: Border.width, borderRightColor: Border.color },
+
+  rightSection: { flex: 1, minWidth: 300, maxWidth: 400, flexDirection: "row", padding: Spacing.xs, gap: Spacing.sm },
+
+  rightTopPart: { flex: 1, marginRight: 3 },
+
+  rightBottomPart: { flex: 1, marginLeft: 3 },
+
+  divH: { height: Border.width, backgroundColor: Border.color, marginVertical: Spacing.sm },
   sec:  { flex: 1, justifyContent: "center" },
 
-  leftPanel: { width: 158, borderRightWidth: 1, borderRightColor: T.border, padding: 10, backgroundColor: T.panel },
-
-  centerPanel: { width: 340, flexDirection: "column", borderRightWidth: 1, borderRightColor: T.border },
-  navHead: { paddingHorizontal: 12, paddingTop: 8, paddingBottom: 6, borderBottomWidth: 1, borderBottomColor: T.border, gap: 6 },
-  navTitleRow: { flexDirection: "row", alignItems: "center", gap: 7 },
-  navTitle: { color: T.text, fontSize: 15, fontWeight: "700", flex: 1 },
-  badge2: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, borderWidth: 1 },
-  badge2Txt: { fontSize: 9, fontWeight: "700" },
-  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
-  chip: { backgroundColor: "rgba(35,39,41,1)", borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
-  chipTxt: { color: T.muted, fontSize: 8, fontWeight: "700" },
+  navHead: { paddingHorizontal: Spacing.panelPadding, paddingTop: Spacing.sm, paddingBottom: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Border.color, gap: Spacing.sm },
+  navTitleRow: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+  navTitle: { ...Typography.headlineMd, color: T.text, fontSize: 14, flex: 1 },
+  badge2: { paddingHorizontal: Spacing.sm, paddingVertical: 2, borderWidth: Border.width },
+  badge2Txt: { ...Typography.labelCaps, fontSize: 8 },
+  mapsBtn: { flexDirection: "row", alignItems: "center", gap: Spacing.xs, backgroundColor: "rgba(66,133,244,0.12)", borderWidth: Border.width, borderColor: "rgba(66,133,244,0.35)", paddingHorizontal: Spacing.sm, paddingVertical: 3 },
+  mapsBtnTxt: { ...Typography.labelCaps, color: "#4285F4", fontSize: 8 },
+  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: Spacing.xs },
+  chip: { backgroundColor: Colors.surfaceContainerHigh, paddingHorizontal: Spacing.sm, paddingVertical: 2 },
+  chipTxt: { ...Typography.labelCaps, color: T.muted, fontSize: 8 },
   mapBox: { flex: 1, overflow: "hidden" },
-  streamBox: { borderTopWidth: 1, borderTopColor: T.border, padding: 10, gap: 5 },
-  streamHead: { flexDirection: "row", alignItems: "center", gap: 6 },
-  streamTitle: { flex: 1, color: T.muted, fontSize: 9, fontWeight: "700", letterSpacing: 0.5 },
-  streamCount: { color: T.dim, fontSize: 8 },
-  streamEmpty: { color: T.dim, fontSize: 10, fontStyle: "italic" },
+  streamBox: { borderTopWidth: Border.width, borderTopColor: Border.color, padding: Spacing.panelPadding, gap: Spacing.xs },
+  streamHead: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+  streamTitle: { ...Typography.labelCaps, flex: 1, color: T.muted, fontSize: 8 },
+  streamCount: { ...Typography.labelCaps, color: T.dim, fontSize: 8 },
+  streamEmpty: { ...Typography.bodyMd, color: T.dim, fontSize: 10, fontStyle: "italic" },
 
-  battPanel: { width: 172, borderRightWidth: 1, borderRightColor: T.border, padding: 12 },
-  panelTitle: { color: T.muted, fontSize: 10, fontWeight: "700", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 },
-  socBig: { fontSize: 48, fontWeight: "700", lineHeight: 52 },
-  socUnit: { fontSize: 18, fontWeight: "600" },
-  socLabel: { color: T.muted, fontSize: 9, marginTop: 3, marginBottom: 8 },
-  battRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  battVal: { color: T.text, fontSize: 15, fontWeight: "700" },
-  battSub: { color: T.muted, fontSize: 8 },
+  battPanel: { flex: 1, backgroundColor: T.panel, padding: Spacing.sm, borderWidth: Border.width, borderColor: Border.color, minHeight: 200 },
+  panelTitle: { ...Typography.labelCaps, color: T.muted, fontSize: 9, marginBottom: Spacing.sm },
+  socBig: { ...Typography.headlineLg, lineHeight: 32 },
+  socUnit: { ...Typography.headlineMd, fontSize: 12 },
+  socLabel: { ...Typography.labelCaps, color: T.muted, fontSize: 8, marginTop: 2, marginBottom: Spacing.sm },
+  battRow: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, marginBottom: Spacing.xs },
+  battVal: { ...Typography.dataMono, color: T.text, fontSize: 16 },
+  battSub: { ...Typography.bodyMd, color: T.muted, fontSize: 9 },
   rangeRow: { flexDirection: "row", alignItems: "center" },
-  rangeDiv: { width: 1, height: 32, backgroundColor: T.border },
-  rangeVal: { color: T.text, fontSize: 13, fontWeight: "700" },
-  rangeLbl: { color: T.muted, fontSize: 8 },
+  rangeDiv: { width: Border.width, height: 32, backgroundColor: Border.color },
+  rangeVal: { ...Typography.dataMono, color: T.text, fontSize: 13 },
+  rangeLbl: { ...Typography.labelCaps, color: T.muted, fontSize: 8 },
 
-  powerPanel: { width: 195, padding: 12 },
-  powerBig: { flexDirection: "row", alignItems: "flex-end", gap: 4, marginTop: 4 },
-  powerVal: { color: T.text, fontSize: 40, fontWeight: "700", lineHeight: 44 },
-  powerUnit: { color: T.muted, fontSize: 13, paddingBottom: 4 },
-  powerSub: { color: T.muted, fontSize: 9 },
-  loadRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
-  loadLabel: { flex: 1, color: T.muted, fontSize: 9 },
-  loadPct: { fontSize: 10, fontWeight: "700" },
+  powerPanel: { flex: 1, backgroundColor: T.panel, padding: Spacing.sm, borderWidth: Border.width, borderColor: Border.color, minHeight: 200 },
+  powerBig: { flexDirection: "row", alignItems: "flex-end", gap: 3, marginTop: 2, marginBottom: 2 },
+  powerVal: { ...Typography.dataMono, color: T.text, fontSize: 24, lineHeight: 28 },
+  powerUnit: { ...Typography.labelCaps, color: T.muted, fontSize: 9, paddingBottom: 2 },
+  powerSub: { ...Typography.labelCaps, color: T.muted, fontSize: 8, marginBottom: Spacing.xs },
+  loadRow: { flexDirection: "row", alignItems: "center", marginBottom: 3 },
+  loadLabel: { ...Typography.labelCaps, flex: 1, color: T.muted, fontSize: 8 },
+  loadPct: { ...Typography.dataMono, fontSize: 9 },
 });

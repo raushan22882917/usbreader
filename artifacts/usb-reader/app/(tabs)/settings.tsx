@@ -6,30 +6,34 @@ import {
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb } from "@/context/UsbContext";
-import { AppHeader } from "@/components/AppHeader";
+import { BAUD_RATES, type BaudRate } from "@/context/UsbContext";
+import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
+import { UsbConnectionBar } from "@/components/UsbConnectionBar";
 import Svg, { Path, Circle, Defs, LinearGradient, Stop } from "react-native-svg";
 
+import { Colors, Typography, Spacing, Border } from "@/theme";
+
 const C = {
-  bg:     "rgba(21,25,27,1)",
-  panel:  "rgba(26,30,32,1)",
-  card:   "rgba(32,36,38,1)",
-  border: "rgba(51,56,58,1)",
-  text:   "rgba(220,221,221,1)",
-  muted:  "rgba(120,122,122,1)",
-  dim:    "rgba(60,62,62,1)",
-  dimBg:  "rgba(28,32,34,1)",
-  green:  "#6EDCA1",
-  yellow: "#FFC832",
-  orange: "#FF9811",
-  red:    "#FF503C",
-  blue:   "#50B4FF",
-  purple: "#A78BFA",
-  terminal: "#020810",
+  bg:       Colors.background,
+  panel:    Colors.surfaceContainerLow,
+  card:     Colors.surfaceContainer,
+  border:   Colors.outlineVariant,
+  text:     Colors.onSurface,
+  muted:    Colors.onSurfaceVariant,
+  dim:      Colors.dim,
+  dimBg:    Colors.surfaceContainerHigh,
+  green:    Colors.tertiary,
+  yellow:   Colors.primaryFixedDim,
+  orange:   Colors.primary,
+  red:      Colors.error,
+  blue:     Colors.secondary,
+  purple:   Colors.inversePrimary,
+  terminal: Colors.terminal,
 };
 
 type MCIcon = React.ComponentProps<typeof MaterialCommunityIcons>["name"];
-type LogFilter = "all" | "rx" | "tx";
+type LogFilter = "all";
 
 // ─── Arc gauge ────────────────────────────────────────────────
 function ArcGauge({ value, max, size, color, label, unit }: {
@@ -88,11 +92,11 @@ function SectionCard({ title, icon, color, right, children }: {
   );
 }
 const sc = StyleSheet.create({
-  card: { backgroundColor: C.card, borderRadius: 10, borderWidth: 1, borderColor: C.border, overflow: "hidden", marginBottom: 10 },
-  head: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.border },
-  iconBox: { width: 26, height: 26, borderRadius: 7, alignItems: "center", justifyContent: "center" },
-  title: { color: C.text, fontSize: 12, fontWeight: "700", flex: 1 },
-  bar: { width: 3, height: 16, borderRadius: 2 },
+  card: { backgroundColor: C.card, borderWidth: Border.width, borderColor: Border.color, overflow: "hidden", marginBottom: Spacing.sm },
+  head: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, paddingHorizontal: Spacing.panelPadding, paddingVertical: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Border.color },
+  iconBox: { width: 26, height: 26, alignItems: "center", justifyContent: "center" },
+  title: { ...Typography.labelCaps, color: C.text, fontSize: 10, flex: 1 },
+  bar: { width: 3, height: 14 },
 });
 
 // ─── Info row ─────────────────────────────────────────────────
@@ -108,9 +112,9 @@ function InfoRow({ icon, label, value, color, mono, last }: {
   );
 }
 const rw = StyleSheet.create({
-  wrap: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: "rgba(35,39,41,1)" },
-  label: { flex: 1, color: C.muted, fontSize: 11 },
-  value: { color: C.text, fontSize: 11, fontWeight: "600", maxWidth: "55%" },
+  wrap: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, paddingHorizontal: Spacing.panelPadding, paddingVertical: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Colors.surfaceContainerHigh },
+  label: { ...Typography.labelCaps, flex: 1, color: C.muted, fontSize: 10 },
+  value: { ...Typography.bodyMd, color: C.text, fontSize: 11, fontWeight: "600", maxWidth: "55%" },
 });
 
 // ─── Toggle row ───────────────────────────────────────────────
@@ -194,19 +198,19 @@ function PacketRow({ direction, data, hex, byteLength, timestamp, index }: {
   );
 }
 const pk = StyleSheet.create({
-  row: { paddingHorizontal: 10, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: "rgba(35,39,41,0.6)" },
-  topLine: { flexDirection: "row", alignItems: "center", gap: 6 },
+  row: { paddingHorizontal: Spacing.panelPadding, paddingVertical: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Colors.surfaceContainerHigh },
+  topLine: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
   indexBox: { width: 28, alignItems: "flex-end" },
-  index: { color: "rgba(45,48,50,1)", fontSize: 9, fontWeight: "700", fontFamily: "monospace" },
-  dirBadge: { paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: 1 },
-  dirTxt: { fontSize: 8, fontWeight: "800", letterSpacing: 0.5 },
-  time: { color: C.muted, fontSize: 8, fontFamily: "monospace", width: 68 },
-  bytes: { color: C.dim, fontSize: 8, fontWeight: "600", width: 26 },
-  data: { flex: 1, color: "rgba(140,220,170,1)", fontSize: 9, fontFamily: "monospace" },
-  expandBox: { marginTop: 6, backgroundColor: "rgba(10,14,16,1)", borderRadius: 6, padding: 8, gap: 4 },
-  expandRow: { flexDirection: "row", gap: 8, alignItems: "flex-start" },
-  expandLabel: { color: C.dim, fontSize: 8, fontWeight: "700", width: 28, paddingTop: 1 },
-  expandVal: { flex: 1, color: C.text, fontSize: 9 },
+  index: { ...Typography.labelCaps, color: Colors.surfaceContainerHighest, fontSize: 9 },
+  dirBadge: { paddingHorizontal: 5, paddingVertical: 1, borderWidth: Border.width },
+  dirTxt: { ...Typography.labelCaps, fontSize: 8 },
+  time: { ...Typography.labelCaps, color: C.muted, fontSize: 8, width: 68 },
+  bytes: { ...Typography.labelCaps, color: C.dim, fontSize: 8, width: 26 },
+  data: { flex: 1, color: Colors.tertiary, fontSize: 9, fontFamily: "monospace" },
+  expandBox: { marginTop: Spacing.sm, backgroundColor: Colors.surfaceContainerLowest, padding: Spacing.sm, gap: Spacing.xs },
+  expandRow: { flexDirection: "row", gap: Spacing.sm, alignItems: "flex-start" },
+  expandLabel: { ...Typography.labelCaps, color: C.dim, fontSize: 8, width: 28, paddingTop: 1 },
+  expandVal: { flex: 1, ...Typography.bodyMd, color: C.text, fontSize: 9 },
 });
 
 // ─── MAIN ────────────────────────────────────────────────────
@@ -215,6 +219,7 @@ export default function SettingsScreen() {
     devices, selectedDevice, connectionStatus, packets,
     isScanning, isConnecting, scanForDevices, connectDevice,
     disconnectDevice, clearPackets, quickConnect,
+    baudRate, setBaudRate,
   } = useUsb();
 
   const isConnected = connectionStatus === "connected";
@@ -244,87 +249,22 @@ export default function SettingsScreen() {
   const [logAll, setLogAll]               = useState(false);
 
   // Log filter
-  const [logFilter, setLogFilter]   = useState<LogFilter>("all");
   const [showHex, setShowHex]       = useState(false);
 
   const filteredPackets = useMemo(() => {
-    const list = logFilter === "rx" ? rxPkts : logFilter === "tx" ? txPkts : [...packets];
+    const list = [...packets];
     return list.slice().reverse().slice(0, 200);
-  }, [packets, logFilter]);
+  }, [packets]);
 
   return (
     <View style={s.root}>
-      <AppHeader title="Settings" icon="cog-outline" iconColor={C.muted} />
+      <Header />
 
       <View style={s.body}>
         {/* ── LEFT SIDEBAR ── */}
         <View style={s.sidebar}>
-          {/* Connection card */}
-          <View style={s.connCard}>
-            <View style={s.connCardHead}>
-              <MaterialCommunityIcons name="connection" size={14} color={C.blue} />
-              <Text style={s.connCardTitle}>Connection</Text>
-            </View>
-            <View style={[s.connStatus, {
-              backgroundColor: isConnected ? "rgba(110,220,161,0.08)" : "rgba(255,80,60,0.06)",
-              borderColor:     isConnected ? "rgba(110,220,161,0.35)" : "rgba(255,80,60,0.3)",
-            }]}>
-              <View style={[s.connStatusDot, { backgroundColor: isConnected ? C.green : C.red }]} />
-              <Text style={[s.connStatusTxt, { color: isConnected ? C.green : C.red }]}>
-                {isConnected ? "● CONNECTED" : "○ OFFLINE"}
-              </Text>
-            </View>
-            {selectedDevice && (
-              <View style={{ gap: 4, marginTop: 4 }}>
-                <Text style={s.devName}>{selectedDevice.name}</Text>
-                <Text style={s.devMfr}>{selectedDevice.manufacturerName ?? "Unknown manufacturer"}</Text>
-                <Text style={s.devVid}>
-                  VID {selectedDevice.vendorId?.toString(16).toUpperCase() ?? "—"} · PID {selectedDevice.productId?.toString(16).toUpperCase() ?? "—"}
-                </Text>
-                {selectedDevice.serialNumber && (
-                  <Text style={s.devVid}>SN: {selectedDevice.serialNumber}</Text>
-                )}
-              </View>
-            )}
-            <View style={s.connBtns}>
-              <Pressable
-                style={[s.connBtn, { backgroundColor: "rgba(80,180,255,0.1)", borderColor: "rgba(80,180,255,0.35)" }]}
-                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); scanForDevices(); }}
-                disabled={isScanning}
-              >
-                {isScanning
-                  ? <ActivityIndicator size="small" color={C.blue} />
-                  : <MaterialCommunityIcons name="magnify" size={13} color={C.blue} />}
-                <Text style={[s.connBtnTxt, { color: C.blue }]}>{isScanning ? "Scanning..." : "Scan"}</Text>
-              </Pressable>
-              <Pressable
-                style={[s.connBtn, {
-                  backgroundColor: isConnected ? "rgba(255,80,60,0.1)" : "rgba(110,220,161,0.1)",
-                  borderColor:     isConnected ? "rgba(255,80,60,0.35)" : "rgba(110,220,161,0.35)",
-                }]}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                  if (isConnected) disconnectDevice();
-                  else if (selectedDevice) connectDevice(selectedDevice);
-                  else quickConnect();
-                }}
-                disabled={isConnecting}
-              >
-                {isConnecting
-                  ? <ActivityIndicator size="small" color={C.green} />
-                  : <MaterialCommunityIcons name={isConnected ? "link-off" : "link"} size={13} color={isConnected ? C.red : C.green} />}
-                <Text style={[s.connBtnTxt, { color: isConnected ? C.red : C.green }]}>
-                  {isConnected ? "Disconnect" : "Connect"}
-                </Text>
-              </Pressable>
-            </View>
-          </View>
-
-          {/* Arc gauges */}
-          <View style={s.gaugeRow}>
-            <ArcGauge value={rxPkts.length} max={Math.max(rxPkts.length, 30)} size={90} color={C.blue} label="RX" unit="pkts" />
-            <ArcGauge value={txPkts.length} max={Math.max(txPkts.length, 30)} size={90} color={C.green} label="TX" unit="pkts" />
-          </View>
+          {/* Shared USB connection bar */}
+          <UsbConnectionBar />
 
           {/* Mini stats */}
           {[
@@ -354,22 +294,6 @@ export default function SettingsScreen() {
             color={C.blue}
             right={
               <View style={log.filters}>
-                {(["all", "rx", "tx"] as LogFilter[]).map((f) => (
-                  <Pressable
-                    key={f}
-                    style={[log.filterBtn, logFilter === f && {
-                      backgroundColor: f === "rx" ? "rgba(80,180,255,0.18)" : f === "tx" ? "rgba(110,220,161,0.18)" : "rgba(255,200,50,0.12)",
-                      borderColor:     f === "rx" ? "rgba(80,180,255,0.5)"  : f === "tx" ? "rgba(110,220,161,0.5)"  : "rgba(255,200,50,0.4)",
-                    }]}
-                    onPress={() => setLogFilter(f)}
-                  >
-                    <Text style={[log.filterTxt, {
-                      color: logFilter === f ? (f === "rx" ? C.blue : f === "tx" ? C.green : C.yellow) : C.muted,
-                    }]}>
-                      {f.toUpperCase()}
-                    </Text>
-                  </Pressable>
-                ))}
                 <Pressable
                   style={[log.filterBtn, { borderColor: "rgba(255,80,60,0.4)", backgroundColor: "rgba(255,80,60,0.08)" }]}
                   onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); clearPackets(); }}
@@ -463,6 +387,32 @@ export default function SettingsScreen() {
           {/* ══ CONNECTION SETTINGS ══ */}
           <SectionCard title="Connection" icon="connection" color={C.orange}>
             <ToggleRow icon="refresh-auto"    label="Auto Reconnect"    desc="Reconnect automatically on disconnect"    value={autoReconnect}   onChange={setAutoReconnect} />
+            {/* Baud rate selector */}
+            <View style={[rw.wrap, { paddingVertical: 10, flexWrap: "wrap", gap: 6 }]}>
+              <MaterialCommunityIcons name="speedometer" size={14} color={C.muted} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: C.text, fontSize: 11, fontWeight: "600", marginBottom: 4 }}>Baud Rate</Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
+                  {BAUD_RATES.map((rate) => (
+                    <Pressable
+                      key={rate}
+                      style={[
+                        bd.chip,
+                        baudRate === rate && bd.chipActive,
+                      ]}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        setBaudRate(rate as BaudRate);
+                      }}
+                    >
+                      <Text style={[bd.chipTxt, baudRate === rate && bd.chipTxtActive]}>
+                        {rate >= 1000 ? `${rate / 1000}k` : rate}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            </View>
           </SectionCard>
 
           {/* ══ APP SETTINGS ══ */}
@@ -486,51 +436,65 @@ export default function SettingsScreen() {
   );
 }
 
+const bd = StyleSheet.create({
+  chip: {
+    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs,
+    borderWidth: Border.width, borderColor: Border.color,
+    backgroundColor: Colors.surfaceContainerHigh,
+  },
+  chipActive: {
+    borderColor: `${Colors.primary}66`,
+    backgroundColor: `${Colors.primary}18`,
+  },
+  chipTxt: { ...Typography.labelCaps, color: C.muted, fontSize: 9 },
+  chipTxtActive: { color: C.orange },
+});
+
 const log = StyleSheet.create({
-  filters: { flexDirection: "row", gap: 4, alignItems: "center" },
-  filterBtn: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 5, borderWidth: 1, borderColor: C.border, alignItems: "center", justifyContent: "center" },
-  filterTxt: { fontSize: 8, fontWeight: "800", letterSpacing: 0.4 },
+  filters: { flexDirection: "row", gap: Spacing.xs, alignItems: "center" },
+  filterBtn: { paddingHorizontal: Spacing.sm, paddingVertical: 3, borderWidth: Border.width, borderColor: Border.color, alignItems: "center", justifyContent: "center" },
+  filterTxt: { ...Typography.labelCaps, fontSize: 8 },
 
-  statBar: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "rgba(35,39,41,1)", backgroundColor: "rgba(18,22,24,1)" },
-  statPill: { flexDirection: "row", alignItems: "center", gap: 5 },
+  statBar: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, paddingHorizontal: Spacing.panelPadding, paddingVertical: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Colors.surfaceContainerHigh, backgroundColor: Colors.surfaceContainerLowest },
+  statPill: { flexDirection: "row", alignItems: "center", gap: Spacing.xs },
   statDot:  { width: 6, height: 6, borderRadius: 3 },
-  statTxt:  { color: C.muted, fontSize: 9, fontWeight: "600" },
-  statRate: { color: C.orange, fontSize: 9, fontWeight: "700" },
+  statTxt:  { ...Typography.labelCaps, color: C.muted, fontSize: 8 },
+  statRate: { ...Typography.labelCaps, color: C.orange, fontSize: 8 },
 
-  empty: { padding: 32, alignItems: "center", gap: 10 },
-  emptyTitle: { color: C.muted, fontSize: 14, fontWeight: "700" },
-  emptySub: { color: C.dim, fontSize: 10, textAlign: "center", maxWidth: 240 },
-  connectBtn: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: C.green, borderRadius: 8, paddingHorizontal: 18, paddingVertical: 9, marginTop: 6 },
-  connectBtnTxt: { color: C.bg, fontSize: 12, fontWeight: "800" },
+  empty: { padding: Spacing.margin, alignItems: "center", gap: Spacing.sm },
+  emptyTitle: { ...Typography.headlineMd, color: C.muted, fontSize: 13 },
+  emptySub: { ...Typography.bodyMd, color: C.dim, fontSize: 10, textAlign: "center", maxWidth: 240 },
+  connectBtn: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, backgroundColor: C.green, paddingHorizontal: Spacing.gutter, paddingVertical: Spacing.sm, marginTop: Spacing.sm },
+  connectBtnTxt: { ...Typography.labelCaps, color: C.bg, fontSize: 11 },
 
-  truncBar: { flexDirection: "row", alignItems: "center", gap: 6, padding: 10, borderTopWidth: 1, borderTopColor: C.border },
-  truncTxt: { color: C.yellow, fontSize: 10 },
+  truncBar: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, padding: Spacing.panelPadding, borderTopWidth: Border.width, borderTopColor: Border.color },
+  truncTxt: { ...Typography.bodyMd, color: C.yellow, fontSize: 10 },
 });
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg, flexDirection: "column" },
   body: { flex: 1, flexDirection: "row" },
 
-  sidebar: { width: 220, borderRightWidth: 1, borderRightColor: C.border, backgroundColor: C.panel, padding: 10, gap: 8 },
+  sidebar: { width: 220, borderRightWidth: Border.width, borderRightColor: Border.color, backgroundColor: C.panel, padding: Spacing.panelPadding, gap: Spacing.sm },
 
-  connCard: { backgroundColor: C.card, borderRadius: 9, borderWidth: 1, borderColor: C.border, padding: 10, gap: 8 },
-  connCardHead: { flexDirection: "row", alignItems: "center", gap: 6 },
-  connCardTitle: { color: C.text, fontSize: 12, fontWeight: "700" },
-  connStatus: { flexDirection: "row", alignItems: "center", gap: 7, borderRadius: 6, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6 },
+  connCard: { backgroundColor: C.card, borderWidth: Border.width, borderColor: Border.color, padding: Spacing.panelPadding, gap: Spacing.sm },
+  connCardHead: { flexDirection: "row", alignItems: "center", gap: Spacing.sm },
+  connCardTitle: { ...Typography.labelCaps, color: C.text, fontSize: 11 },
+  connStatus: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, borderWidth: Border.width, paddingHorizontal: Spacing.panelPadding, paddingVertical: Spacing.sm },
   connStatusDot: { width: 6, height: 6, borderRadius: 3 },
-  connStatusTxt: { fontSize: 10, fontWeight: "700", letterSpacing: 0.5 },
-  devName: { color: C.text, fontSize: 12, fontWeight: "700" },
-  devMfr:  { color: C.muted, fontSize: 10 },
-  devVid:  { color: C.blue, fontSize: 9, fontWeight: "600" },
-  connBtns: { flexDirection: "row", gap: 6 },
-  connBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, borderRadius: 7, borderWidth: 1, paddingVertical: 7 },
-  connBtnTxt: { fontSize: 11, fontWeight: "700" },
+  connStatusTxt: { ...Typography.labelCaps, fontSize: 9 },
+  devName: { ...Typography.headlineMd, color: C.text, fontSize: 12 },
+  devMfr:  { ...Typography.bodyMd, color: C.muted, fontSize: 10 },
+  devVid:  { ...Typography.labelCaps, color: C.blue, fontSize: 8 },
+  connBtns: { flexDirection: "row", gap: Spacing.sm },
+  connBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: Spacing.xs, borderWidth: Border.width, paddingVertical: Spacing.sm },
+  connBtnTxt: { ...Typography.labelCaps, fontSize: 10 },
 
-  gaugeRow: { flexDirection: "row", justifyContent: "space-around", paddingVertical: 4 },
-  miniStat: { flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.border },
-  miniStatLabel: { flex: 1, color: C.muted, fontSize: 10 },
-  miniStatVal: { fontSize: 11, fontWeight: "700" },
+  gaugeRow: { flexDirection: "row", justifyContent: "space-around", paddingVertical: Spacing.xs },
+  miniStat: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, paddingVertical: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Border.color },
+  miniStatLabel: { ...Typography.labelCaps, flex: 1, color: C.muted, fontSize: 9 },
+  miniStatVal: { ...Typography.dataMono, fontSize: 11 },
 
   main: { flex: 1 },
-  mainContent: { padding: 14 },
+  mainContent: { padding: Spacing.gutter },
 });

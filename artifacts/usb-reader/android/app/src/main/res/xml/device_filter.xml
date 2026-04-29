@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  USB device filter — tells Android which devices this app can access.
+  Using empty usb-device entry means: match ALL USB devices.
+  Android will show the "Allow USB access?" dialog automatically when
+  a matching device is plugged in.
+-->
+<resources>
+    <!-- Match every USB device (no vendor/product filter) -->
+    <usb-device />
+</resources>

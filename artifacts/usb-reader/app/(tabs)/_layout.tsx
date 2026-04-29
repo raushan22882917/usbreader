@@ -14,6 +14,8 @@ export default function TabLayout() {
       <Tabs.Screen name="write" />
       <Tabs.Screen name="diagnostics" />
       <Tabs.Screen name="decoder" />
+      <Tabs.Screen name="inventor" />
+      <Tabs.Screen name="usbtest" />
       <Tabs.Screen name="settings" />
     </Tabs>
   );

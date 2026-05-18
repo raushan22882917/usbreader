@@ -25,8 +25,8 @@ keytool -genkeypair \
   -keyalg RSA \
   -keysize 2048 \
   -validity $VALIDITY \
-  -storepass android \
-  -keypass android \
+  -storepass Autonxt@2288 \
+  -keypass Autonxt@2288 \
   -dname "CN=USB Reader, OU=Mobile, O=FirstClassDelivary, L=Unknown, ST=Unknown, C=US"
 
 echo ""
@@ -34,8 +34,8 @@ echo "✅ Keystore created at: $KEYSTORE"
 echo ""
 echo "Add these lines to android/gradle.properties (or pass as -P flags):"
 echo "  RELEASE_STORE_FILE=release.keystore"
-echo "  RELEASE_STORE_PASSWORD=android"
+echo "  RELEASE_STORE_PASSWORD=Autonxt@2288"
 echo "  RELEASE_KEY_ALIAS=usbreader"
-echo "  RELEASE_KEY_PASSWORD=android"
+echo "  RELEASE_KEY_PASSWORD=Autonxt@2288"
 echo ""
 echo "⚠️  Change the passwords above before publishing to the Play Store!"

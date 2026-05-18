@@ -1,12 +1,12 @@
 import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -16,9 +16,11 @@ import * as DocumentPicker from "expo-document-picker";
 import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
 import { useUsb } from "@/context/UsbContext";
+import { useParsedUsbData } from "@/hooks/useParsedUsbData";
 import { UsbConnectionBar } from "@/components/UsbConnectionBar";
+import USBSerialService from "@/USBSerialService";
 
-import { Colors, Typography, Spacing, Border } from "@/theme";
+import { Colors } from "@/theme";
 
 const C = {
   bg:       Colors.background,
@@ -36,22 +38,29 @@ const C = {
   terminal: Colors.terminal,
 };
 
-// ── Flash constants — matches Python exactly ─────────────────
-const FLASH_SIZE     = 131072;   // 128 KB
-const DATA_PER_FRAME = 4;
-const N_FRAMES       = FLASH_SIZE / DATA_PER_FRAME; // 32768
+// ── Flash / OTA constants ─────────────────────────────────────
+const FLASH_SIZE       = 131072;    // 128 KB
+const DATA_PER_FRAME   = 4;         // 4 B firmware payload per CAN seq (8 B CAN frame total)
+const N_FRAMES         = FLASH_SIZE / DATA_PER_FRAME; // 32768
+// Matches ESP32 BATCH_SIZE and Python: 128 KB / 4 B = 32768 frames, 512 batches.
+const FRAMES_PER_BATCH = 64;
+const N_BATCHES        = N_FRAMES / FRAMES_PER_BATCH; // 512
 
-// CAN IDs (as 3-digit hex strings for display)
-const ID_PING = "069";
-const ID_BUS  = "00B";
+// false = 8 frames/UART line (~220 B, fits ESP32 default RX). true = 64 frames/line (needs setRxBufferSize(4096)).
+const OTA_FULL_BATCH_MODE = false;
+const FRAMES_PER_UART_MSG = OTA_FULL_BATCH_MODE ? FRAMES_PER_BATCH : 8;
+const UART_MSGS_PER_BATCH = FRAMES_PER_BATCH / FRAMES_PER_UART_MSG;
 
-// Bootloader commands
-const CMD_UNLOCK = 0xA0;
-const CMD_DATA   = 0xA1;
-const CMD_VERIFY = 0xA2;
-const CMD_GO     = 0xA3;
-const ACK_OK     = 0x50;
-const ACK_CRC_OK = 0x53;
+// Timeouts (ms)
+const TIMEOUT_READY_MS   = 5000;
+const TIMEOUT_UART_MSG_MS = OTA_FULL_BATCH_MODE ? 130000 : 25000;
+const TIMEOUT_VERIFY_MS  = 15000;
+const UART_MSG_GAP_MS    = 20;
+
+// Retry limits
+const MAX_BATCH_RETRIES   = 3;
+const MAX_SESSION_RETRIES = 2;
+const MAX_STEP_RETRIES    = 3;
 
 // ── CRC32 — matches Python's binascii.crc32 ──────────────────
 function crc32(buf: Uint8Array): number {
@@ -65,9 +74,40 @@ function crc32(buf: Uint8Array): number {
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
 
-// ── Hex string helper ─────────────────────────────────────────
-function toHexStr(bytes: number[]): string {
-  return bytes.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(" ");
+// ── Encode a UTF-8 string to a lowercase hex string ──────────
+// UsbContext.writeData() expects a hex-encoded byte string (e.g. "7b22636d64...").
+// ESP32 Serial.readStringUntil('\n') reads raw bytes, so we encode the JSON
+// text + newline terminator as hex before handing it to writeData().
+function strToHex(str: string): string {
+  let hex = "";
+  for (let i = 0; i < str.length; i++) {
+    hex += str.charCodeAt(i).toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
+/** Build [[d0,d1,d2,d3],...] for one UART data command (full or partial batch on retry). */
+function buildBatchFrames(
+  fw: Uint8Array,
+  batchIdx: number,
+  fromFrame: number,
+  count: number,
+): number[][] {
+  const baseSeq = batchIdx * FRAMES_PER_BATCH;
+  const frames: number[][] = [];
+  for (let i = 0; i < count; i++) {
+    const off = (baseSeq + fromFrame + i) * DATA_PER_FRAME;
+    frames.push([fw[off], fw[off + 1], fw[off + 2], fw[off + 3]]);
+  }
+  return frames;
+}
+
+function summarizeOtaJson(obj: Record<string, unknown>): string {
+  const frames = obj.frames;
+  if (Array.isArray(frames) && frames.length > 2) {
+    return JSON.stringify({ ...obj, frames: `[${frames.length} frames]` });
+  }
+  return JSON.stringify(obj);
 }
 
 type ViewMode = "hex" | "binary" | "decimal" | "ascii";
@@ -220,6 +260,28 @@ const ht = StyleSheet.create({
   truncTxt: { color: C.yellow, fontSize: 11 },
 });
 
+// ── Live data ticker (same as Dashboard) ─────────────────────
+function fmtBytes(b: number): string {
+  if (b < 1024) return `${b}B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)}KB`;
+  return `${(b / 1024 / 1024).toFixed(1)}MB`;
+}
+function DataTicker({ data, time }: { data: string; time: string }) {
+  return (
+    <View style={dtk.row}>
+      <View style={dtk.dot} />
+      <Text style={dtk.time}>{time}</Text>
+      <Text style={dtk.data} numberOfLines={1}>{data || "—"}</Text>
+    </View>
+  );
+}
+const dtk = StyleSheet.create({
+  row:  { flexDirection: "row", alignItems: "center", gap: 6 },
+  dot:  { width: 5, height: 5, borderRadius: 3, backgroundColor: C.green },
+  time: { color: C.muted, fontSize: 9, width: 54 },
+  data: { flex: 1, color: "rgba(140,220,170,1)", fontSize: 9, fontFamily: "monospace" },
+});
+
 function readFileWeb(file: File): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -270,36 +332,40 @@ const fs = StyleSheet.create({
 });
 
 const FLASH_STEPS = [
-  "PING (Wake)",
-  "SYNC (Bus)",
-  "ANNOUNCE",
-  "DEVICE INFO",
-  "UNLOCK",
-  "DATA (32768 frames)",
+  "START → ESP32 init",
+  "ESP32: PING (Wake BMS)",
+  "ESP32: SYNC + ANNOUNCE",
+  "ESP32: DEVICE INFO",
+  "ESP32: UNLOCK → Ready",
+  "DATA (512×64, 8 frames/msg)",
   "VERIFY CRC32",
-  "GO",
+  "COMPLETE (Activated)",
 ];
 
 // ── Main ─────────────────────────────────────────────────────
 export default function DecoderScreen() {
   const insets = useSafeAreaInsets();
-  const { writeData, connectionStatus, quickConnect } = useUsb();
+  const { writeData, connectionStatus, quickConnect, packets } = useUsb();
   const isConnected = connectionStatus === "connected";
+  const parsed = useParsedUsbData(packets);
 
   const [fileInfo, setFileInfo] = useState<FileInfo | null>(null);
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
   const [mode, setMode]         = useState<ViewMode>("hex");
-  const [jumpTo, setJumpTo]     = useState("");
-  const [jumpOffset, setJumpOffset] = useState(0);
 
-  // Flash protocol state
-  const [isSending, setIsSending]   = useState(false);
-  const [sendStep, setSendStep]     = useState(-1);       // -1 = idle
-  const [sendProgress, setSendProgress] = useState(0);   // 0–100
-  const [sendLog, setSendLog]       = useState<string[]>([]);
-  const [sendDone, setSendDone]     = useState<boolean | null>(null); // null=idle true=ok false=err
-  const abortRef = useRef(false);
+  // Flash / OTA protocol state
+  const [isSending, setIsSending]       = useState(false);
+  const [sendStep, setSendStep]         = useState(-1);       // -1 = idle
+  const [sendProgress, setSendProgress] = useState(0);        // 0–100
+  const [sendLog, setSendLog]           = useState<string[]>([]);
+  const [sendDone, setSendDone]         = useState<boolean | null>(null);
+  const [currentBatch, setCurrentBatch] = useState(0);        // current batch index
+  const [sessionRetry, setSessionRetry] = useState(0);        // session retry count
+  const [logModalVisible, setLogModalVisible] = useState(false);
+  const abortRef         = useRef(false);
+  const connectionRef    = useRef(connectionStatus);
+  connectionRef.current  = connectionStatus;
 
   const leftPad   = Platform.OS === "web" ? 0 : insets.left;
   const rightPad  = Platform.OS === "web" ? 0 : insets.right;
@@ -319,6 +385,8 @@ export default function DecoderScreen() {
     setSendProgress(0);
     setSendLog([]);
     setSendDone(null);
+    setCurrentBatch(0);
+    setSessionRetry(0);
   }
 
   const handlePickNative = useCallback(async () => {
@@ -377,20 +445,36 @@ export default function DecoderScreen() {
     return { zeros, printable, nonPrint, unique: seen.size, ffCount };
   }, [fileInfo]);
 
-  const handleJump = () => {
-    const offset = parseInt(jumpTo, 16);
-    if (!isNaN(offset)) setJumpOffset(offset);
-  };
-
-  // ── BMS Flash Protocol — matches Python flash_bms() ───────
+  // ── ESP32 BMS Flash Bridge (matches Python flash_bms + ESP32 firmware v2) ──
+  //   start:  {"cmd":"start","crc32":N,"total":32768}
+  //   data:   {"cmd":"data","batch":B,"frames":[[d0,d1,d2,d3],...]}  // up to 64
+  //   partial retry: same + optional "from":F  (ESP32: seq = B*64 + F + i)
+  //   verify: {"cmd":"verify"}
   const log = (msg: string) =>
-    setSendLog((prev) => [...prev.slice(-29), msg]);
+    setSendLog((prev) => [...prev.slice(-49), msg]);
 
   const handleFlash = useCallback(async () => {
     if (!fileInfo) return;
-    if (!isConnected) {
+
+    const isUsbConnected = () => connectionRef.current === "connected";
+
+    const requireUsb = async () => {
+      if (isUsbConnected()) return;
       await quickConnect();
-      await new Promise((r) => setTimeout(r, 800));
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        if (isUsbConnected()) return;
+      }
+      throw new Error("USB not connected — connect the ESP32 using the connection bar.");
+    };
+
+    try {
+      await requireUsb();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      setSendDone(false);
+      return;
     }
 
     abortRef.current = false;
@@ -398,132 +482,358 @@ export default function DecoderScreen() {
     setSendDone(null);
     setSendProgress(0);
     setSendLog([]);
+    setCurrentBatch(0);
+    setSessionRetry(0);
 
-    const fw = fileInfo.bytes;
+    const fw       = fileInfo.bytes;
     const checksum = fileInfo.crc32;
 
-    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const send  = (id: string, data: number[], label: string) => {
-      const hex = toHexStr(data);
-      log(`TX id=0x${id} [${hex}]  ${label}`);
-      writeData(`TX:${id} DATA:${hex}`);
+    const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+    // Newline-terminated JSON; stream bytes so ESP32 UART FIFO (128 B) is not overrun.
+    const UART_WRITE_CHUNK = 32;
+    const UART_WRITE_GAP_MS = 5;
+
+    const sendCmd = async (obj: Record<string, unknown>) => {
+      if (!isUsbConnected()) {
+        throw new Error("USB disconnected during OTA");
+      }
+      const json = JSON.stringify(obj);
+      log(`→ ${summarizeOtaJson(obj)} (${json.length} B)`);
+      const hex = strToHex(json + "\n");
+      const hexChunkSize = UART_WRITE_CHUNK * 2;
+      for (let i = 0; i < hex.length; i += hexChunkSize) {
+        await writeData(hex.slice(i, i + hexChunkSize));
+        if (i + hexChunkSize < hex.length) await delay(UART_WRITE_GAP_MS);
+      }
+      await delay(Math.max(15, Math.ceil(json.length / 35)));
     };
 
-    try {
-      // Step 1 — PING
-      setSendStep(0);
-      log(">> Step 1: Wake ping");
-      send(ID_PING, [0x69], "PING");
-      await delay(20);
+    // Session UART listener — armed BEFORE each send so fast ESP32 replies are not missed.
+    const IGNORED_STATUSES = new Set(["boot", "aborted"]);
+    const STRAY_AFTER_HANDSHAKE = new Set(["boot", "aborted", "ready"]);
 
-      if (abortRef.current) throw new Error("Aborted");
+    let sessionRxText = "";
+    let jsonWaiter: {
+      resolve: (obj: Record<string, unknown>) => void;
+      reject: (err: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    } | null = null;
+    let handshakeDone = false;
 
-      // Step 2 — SYNC
-      setSendStep(1);
-      log(">> Step 2: Bus sync");
-      send(ID_BUS, [0x69,0x96,0x69,0x96,0x69,0x96,0x69,0x96], "SYNC");
-      await delay(50);
+    const deliverJson = (obj: Record<string, unknown>) => {
+      if (!jsonWaiter) {
+        if (handshakeDone && obj.status && STRAY_AFTER_HANDSHAKE.has(obj.status as string)) return;
+        return;
+      }
+      clearTimeout(jsonWaiter.timer);
+      const w = jsonWaiter;
+      jsonWaiter = null;
+      log(`   ← ${JSON.stringify(obj)}`);
+      w.resolve(obj);
+    };
 
-      if (abortRef.current) throw new Error("Aborted");
+    const onSessionHex = (hexData: string) => {
+      if (abortRef.current && jsonWaiter) {
+        jsonWaiter.reject(new Error("Aborted"));
+        jsonWaiter = null;
+        return;
+      }
+      let chunk = "";
+      for (let i = 0; i < hexData.length; i += 2)
+        chunk += String.fromCharCode(parseInt(hexData.substring(i, i + 2), 16));
+      sessionRxText += chunk;
 
-      // Step 3 — ANNOUNCE
-      setSendStep(2);
-      log(">> Step 3: Announce TX [B1] → RX [B1]");
-      send(ID_BUS, [0xB1], "ANNOUNCE");
-      await delay(30);
-
-      if (abortRef.current) throw new Error("Aborted");
-
-      // Step 4 — DEVICE INFO (listen)
-      setSendStep(3);
-      log(">> Step 4: Wait device info RX id=0x456 [11 ...]");
-      await delay(80);
-
-      if (abortRef.current) throw new Error("Aborted");
-
-      // Step 5 — UNLOCK
-      setSendStep(4);
-      log(">> Step 5: UNLOCK TX [A0 00 E2 04 00 00 02 00]");
-      send(ID_BUS, [CMD_UNLOCK, 0x00, 0xE2, 0x04, 0x00, 0x00, 0x02, 0x00], "UNLOCK");
-      await delay(30);
-
-      if (abortRef.current) throw new Error("Aborted");
-
-      // Step 6 — DATA frames (send key frames, report progress)
-      setSendStep(5);
-      log(`>> Step 6: DATA ${N_FRAMES.toLocaleString()} frames [A1 seq E2 04 d1 d2 d3 d4]`);
-
-      const REPORT_EVERY = 512;
-      let lastYield = Date.now();
-
-      for (let seq = 0; seq < N_FRAMES; seq++) {
-        if (abortRef.current) throw new Error("Aborted");
-
-        const off = seq * DATA_PER_FRAME;
-        const d   = [fw[off], fw[off+1], fw[off+2], fw[off+3]];
-        const frame = [CMD_DATA, seq & 0xFF, 0xE2, 0x04, ...d];
-
-        // Send first 3, last 3, and every 512th frame to USB
-        if (seq < 3 || seq >= N_FRAMES - 3 || seq % REPORT_EVERY === 0) {
-          send(ID_BUS, frame, `DATA seq=${seq} off=0x${(seq*4).toString(16).toUpperCase().padStart(6,"0")}`);
-        }
-
-        if (seq % REPORT_EVERY === 0 || seq === N_FRAMES - 1) {
-          setSendProgress(((seq + 1) / N_FRAMES) * 100);
-          if (Date.now() - lastYield > 16) {
-            await delay(0); // yield to event loop every ~16ms
-            lastYield = Date.now();
+      let depth = 0, start = -1;
+      for (let i = 0; i < sessionRxText.length; i++) {
+        const ch = sessionRxText[i];
+        if (ch === "{") { if (depth === 0) start = i; depth++; }
+        else if (ch === "}") {
+          depth--;
+          if (depth === 0 && start !== -1) {
+            try {
+              const obj = JSON.parse(sessionRxText.slice(start, i + 1)) as Record<string, unknown>;
+              sessionRxText = sessionRxText.slice(i + 1);
+              if (obj.status !== undefined || obj.state !== undefined) deliverJson(obj);
+            } catch { /* partial JSON — keep buffering */ }
+            start = -1;
           }
         }
       }
-      log(`   All ${N_FRAMES.toLocaleString()} frames sent ✓`);
+    };
 
-      if (abortRef.current) throw new Error("Aborted");
+    const armJsonWait = (timeoutMs: number): Promise<Record<string, unknown>> =>
+      new Promise((resolve, reject) => {
+        if (abortRef.current) { reject(new Error("Aborted")); return; }
+        if (jsonWaiter) reject(new Error("Internal: response waiter already active"));
+        const timer = setTimeout(() => {
+          if (!jsonWaiter) return;
+          jsonWaiter.reject(new Error(`ESP32 timeout (${timeoutMs}ms) — no response`));
+          jsonWaiter = null;
+        }, timeoutMs);
+        jsonWaiter = { resolve, reject, timer };
+      });
 
-      // Step 7 — VERIFY CRC32
-      setSendStep(6);
-      const crcBytes = [
-        (checksum       ) & 0xFF,
-        (checksum >>  8) & 0xFF,
-        (checksum >> 16) & 0xFF,
-        (checksum >> 24) & 0xFF,
-      ];
-      log(`>> Step 7: VERIFY CRC32=0x${checksum.toString(16).toUpperCase().padStart(8,"0")}`);
-      send(ID_BUS, [CMD_VERIFY, 0x00, 0xE2, 0x04, ...crcBytes], "VERIFY");
-      await delay(30);
+    /** Listen first, then send — prevents lost responses on small/fast replies. */
+    const sendAndWait = async (
+      obj: Record<string, unknown>,
+      timeoutMs: number,
+    ) => {
+      const respPromise = armJsonWait(timeoutMs);
+      await sendCmd(obj);
+      return respPromise;
+    };
 
-      if (abortRef.current) throw new Error("Aborted");
+    const sessionUnsub = USBSerialService.onData(onSessionHex);
 
-      // Step 8 — GO
-      setSendStep(7);
-      log(">> Step 8: GO");
-      send(ID_BUS, [CMD_GO, 0x00, 0xE2, 0x00, 0x00, 0x00, 0x00, 0x00], "GO");
-      await delay(20);
+    // ── Phase 1: Start — ESP32 runs init autonomously ────
+    // Android sends {"cmd":"start","crc32":N,"total":32768}
+    // ESP32 internally runs: ping → sync → announce → unlock
+    // ESP32 responds {"status":"ready","msg":"unlocked"}
+    const runStart = async (): Promise<boolean> => {
+      for (let attempt = 0; attempt <= MAX_STEP_RETRIES; attempt++) {
+        if (abortRef.current) throw new Error("Aborted");
+        if (attempt > 0) {
+          log(`   ↺ START retry ${attempt}/${MAX_STEP_RETRIES}`);
+          await delay(500);
+        }
+        setSendStep(0);
+        log(`>> [1/4] START — crc32=0x${checksum.toString(16).toUpperCase().padStart(8, "0")} total=${N_FRAMES}`);
+        setSendStep(4);
+        log(`   Waiting for ESP32 init (PING → SYNC → ANNOUNCE → UNLOCK)…`);
 
-      log("✓ Flash sequence complete!");
-      setSendProgress(100);
-      setSendDone(true);
+        try {
+          const resp = await sendAndWait(
+            { cmd: "start", crc32: checksum >>> 0, total: N_FRAMES },
+            TIMEOUT_READY_MS,
+          );
+          if (resp.status === "ready") {
+            log(`   ✓ Handshake complete`);
+            handshakeDone = true;
+            return true;
+          }
+          if (resp.status === "error") {
+            log(`   ✗ ESP32 error: ${resp.msg ?? "unknown"} — retrying`);
+            continue;
+          }
+          log(`   ✗ Expected ready, got: ${JSON.stringify(resp)}`);
+        } catch (e: unknown) {
+          log(`   ✗ ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      return false;
+    };
+
+    // ── Phase 2: DATA — Python-style CAN via JSON bridge ─────────────────────
+    // {"cmd":"data","batch":B,"from":F,"frames":[[d0,d1,d2,d3],...]}
+    // ESP32: seq=B*64+F → CAN [A1 seq_lo E2 04 d0 d1 d2 d3]  (byte 2 must be 0xE2)
+    const sendBatch = async (
+      batchIdx: number,
+      fromFrame = 0,
+    ): Promise<{ ok: boolean; failedFrame: number }> => {
+      let batchRetries = 0;
+      let resumeFrom = fromFrame;
+
+      while (batchRetries <= MAX_BATCH_RETRIES) {
+        if (abortRef.current) throw new Error("Aborted");
+
+        if (batchRetries > 0) {
+          log(`   ↺ Batch ${batchIdx} retry ${batchRetries}/${MAX_BATCH_RETRIES} from frame ${resumeFrom}`);
+          await delay(200);
+        }
+
+        for (let fi = resumeFrom; fi < FRAMES_PER_BATCH; fi += FRAMES_PER_UART_MSG) {
+          if (abortRef.current) throw new Error("Aborted");
+
+          const globalSeq = batchIdx * FRAMES_PER_BATCH + fi;
+          const count = Math.min(FRAMES_PER_UART_MSG, FRAMES_PER_BATCH - fi);
+          const frames = buildBatchFrames(fw, batchIdx, fi, count);
+          const pf = frames[0];
+          const seqLo = (globalSeq & 0xFF).toString(16).padStart(2, "0").toUpperCase();
+
+          const lineNum = Math.floor(fi / FRAMES_PER_UART_MSG) + 1;
+          if (fi === resumeFrom || lineNum === 1 || fi + FRAMES_PER_UART_MSG >= FRAMES_PER_BATCH) {
+            log(
+              `→ batch=${batchIdx} from=${fi} msg ${lineNum}/${UART_MSGS_PER_BATCH} ` +
+              `(frames ${fi + 1}-${fi + frames.length}/${FRAMES_PER_BATCH}) ` +
+              `| CAN: A1 ${seqLo} E2 04 ${pf.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}`,
+            );
+          }
+
+          let resp: Record<string, unknown>;
+          try {
+            resp = await sendAndWait(
+              { cmd: "data", batch: batchIdx, from: fi, frames },
+              TIMEOUT_UART_MSG_MS,
+            );
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            log(`   ✗ batch=${batchIdx} from=${fi}: ${msg}`);
+            if (fi === 0 && batchRetries === 0) {
+              log(`   ⚠ Flash ESP32: 0xE2 in CAN byte 2, from field, setRxBufferSize(4096) — see firmware/ESP32_BmsFlashBridge_patches.cpp`);
+            }
+            resumeFrom = fi;
+            batchRetries++;
+            break;
+          }
+
+          if (resp.status === "ok") {
+            const progress = (resp.progress as number) ?? ((globalSeq + frames.length) / N_FRAMES) * 100;
+            const batchDone = fi + frames.length >= FRAMES_PER_BATCH;
+            setSendProgress(
+              (batchIdx / N_BATCHES) * 88 +
+              ((fi + frames.length) / FRAMES_PER_BATCH) * (88 / N_BATCHES),
+            );
+            if (batchDone) {
+              const next = (resp.next as number) ?? (batchIdx + 1) * FRAMES_PER_BATCH;
+              log(`   ✓ batch=${batchIdx} next=${next} progress=${progress.toFixed(1)}%`);
+              return { ok: true, failedFrame: -1 };
+            }
+            await delay(UART_MSG_GAP_MS);
+            continue;
+          }
+
+          if (resp.status === "retry") {
+            resumeFrom = typeof resp.from === "number" ? resp.from : fi;
+            log(`   ← retry batch=${batchIdx} from=${resumeFrom}`);
+            batchRetries++;
+            break;
+          }
+
+          if (resp.status === "error") {
+            log(`   ✗ seq=${globalSeq}: ${resp.msg ?? "unknown"}`);
+            resumeFrom = typeof resp.from === "number" ? resp.from : fi;
+            batchRetries++;
+            break;
+          }
+
+          log(`   ✗ seq=${globalSeq} unexpected: ${JSON.stringify(resp)}`);
+          resumeFrom = fi;
+          batchRetries++;
+          break;
+        }
+
+        if (resumeFrom >= FRAMES_PER_BATCH) return { ok: true, failedFrame: -1 };
+      }
+
+      log(`   ✗ Batch ${batchIdx} failed after ${MAX_BATCH_RETRIES} retries`);
+      return { ok: false, failedFrame: resumeFrom };
+    };
+
+    // ── Main OTA loop ─────────────────────────────────────
+    let sessionTries = 0;
+    let resumeBatch  = 0;
+    let resumeFrame  = 0;
+
+    try {
+      while (sessionTries <= MAX_SESSION_RETRIES) {
+        if (abortRef.current) throw new Error("Aborted");
+        if (sessionTries > 0) {
+          log(`\n↺ Session retry ${sessionTries}/${MAX_SESSION_RETRIES} — resuming batch ${resumeBatch} frame ${resumeFrame}`);
+          setSessionRetry(sessionTries);
+          await delay(500);
+        }
+
+        // Phase 1 — Start (ESP32 runs init autonomously)
+        const startOk = await runStart();
+        if (!startOk) {
+          sessionTries++;
+          log(`   ✗ Start failed — session retry ${sessionTries}`);
+          continue;
+        }
+        // Phase 2 — Stream all batches
+        setSendStep(5);
+        log(
+          `>> [2/4] DATA — ${N_BATCHES} batches × ${FRAMES_PER_BATCH} frames ` +
+          `(${FRAMES_PER_UART_MSG} frames/UART msg, CAN: A1 xx E2 04)`,
+        );
+
+        let dataOk = true;
+        for (let b = resumeBatch; b < N_BATCHES; b++) {
+          if (abortRef.current) throw new Error("Aborted");
+          setCurrentBatch(b);
+          setSendProgress((b / N_BATCHES) * 88);
+
+          const result = await sendBatch(b, b === resumeBatch ? resumeFrame : 0);
+          if (!result.ok) {
+            resumeBatch = b;
+            resumeFrame = Math.max(0, result.failedFrame);
+            log(`   ✗ Batch ${b} failed at frame ${resumeFrame} — resuming here on retry`);
+            dataOk = false;
+            break;
+          }
+          resumeFrame = 0;
+        }
+
+        if (!dataOk) { sessionTries++; continue; }
+
+        log(`   ✓ All ${N_BATCHES} batches delivered`);
+        setSendProgress(90);
+
+        // Phase 3 — Verify
+        // ESP32 handleVerify(): checks framesSent==totalFrames, sends VERIFY+GO to BMS
+        // responds {"status":"complete"} on success, {"status":"error"} on failure
+        setSendStep(6);
+        log(`>> [3/4] VERIFY — CRC32=0x${checksum.toString(16).toUpperCase().padStart(8, "0")}`);
+        log(`   ESP32 will send: [A2 00 E2 04 crc0..3] then [A3 00 E2 00 00 00 00 00]`);
+
+        let verifyOk = false;
+        for (let attempt = 0; attempt <= MAX_STEP_RETRIES; attempt++) {
+          if (abortRef.current) throw new Error("Aborted");
+          if (attempt > 0) {
+            log(`   ↺ VERIFY retry ${attempt}/${MAX_STEP_RETRIES}`);
+            await delay(500);
+          }
+          try {
+            const resp = await sendAndWait({ cmd: "verify" }, TIMEOUT_VERIFY_MS);
+
+            if (resp.status === "complete") {
+              log(`   ← {"status":"complete"} ✓ — firmware activated`);
+              verifyOk = true;
+              break;
+            }
+            if (resp.status === "error") {
+              log(`   ✗ Verify error: ${resp.msg ?? "unknown"}`);
+              if (String(resp.msg).includes("Not all frames")) {
+                log(`   ✗ Frame count mismatch — restarting from batch 0`);
+                resumeBatch = 0; resumeFrame = 0;
+                break;
+              }
+              continue;
+            }
+            log(`   ✗ Unexpected verify response: ${JSON.stringify(resp)}`);
+          } catch (e: unknown) {
+            log(`   ✗ ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        if (!verifyOk) {
+          log("   ✗ VERIFY failed — restarting from batch 0");
+          resumeBatch = 0; resumeFrame = 0; sessionTries++;
+          continue;
+        }
+
+        // Phase 4 — Done
+        setSendStep(7);
+        setSendProgress(100);
+        setSendDone(true);
+        log(`\n✓ OTA complete! Firmware flashed and activated.`);
+        return;
+      }
+
+      throw new Error(`OTA failed after ${MAX_SESSION_RETRIES} session retries`);
 
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      log(`✗ ERROR: ${msg}`);
+      log(`✗ FATAL: ${msg}`);
+      try { await sendAndWait({ cmd: "abort" }, 3000); } catch { /* ignore */ }
       setSendDone(false);
     } finally {
+      sessionUnsub();
+      jsonWaiter = null;
       setIsSending(false);
     }
-  }, [fileInfo, isConnected, quickConnect, writeData]);
-
-  // ── Send raw hex bytes to USB ─────────────────────────────
-  const handleSendHex = useCallback(async () => {
-    if (!fileInfo) return;
-    if (!isConnected) { await quickConnect(); await new Promise((r) => setTimeout(r, 800)); }
-    // Send first 256 bytes as hex string (representative)
-    const chunk = Array.from(fileInfo.bytes.slice(0, 256))
-      .map((b) => b.toString(16).padStart(2, "0").toUpperCase())
-      .join(" ");
-    writeData(`HEX:${chunk}`);
-    log(`TX hex chunk (first 256 B): ${chunk.slice(0, 48)}...`);
-  }, [fileInfo, isConnected, quickConnect, writeData]);
+  }, [fileInfo, quickConnect, writeData]);
 
   const stepStates = (i: number): StepState => {
     if (sendStep === -1 && !isSending) return "idle";
@@ -594,7 +904,7 @@ export default function DecoderScreen() {
                 <StatItem label="ORIGINAL SIZE"  value={fileInfo.origSize.toLocaleString() + " B"}              color={C.blue} />
                 <StatItem label="FLASH SIZE"      value={fileInfo.size.toLocaleString() + " B (128 KB)"}          color={C.blue} />
                 <StatItem label="CRC32"           value={"0x" + fileInfo.crc32.toString(16).toUpperCase().padStart(8,"0")} color={C.green} />
-                <StatItem label="FRAMES (4 B ea)" value={N_FRAMES.toLocaleString()}                               color={C.yellow} />
+                <StatItem label="FRAMES (4 B ea)" value={`${N_FRAMES.toLocaleString()} · ${FRAMES_PER_UART_MSG} frames/UART · ${UART_MSGS_PER_BATCH} msg/batch`} color={C.yellow} />
                 <StatItem label="UNIQUE BYTES"    value={byteFreq.unique.toString()}                              color={C.yellow} />
                 <StatItem label="NULL (0x00)"     value={byteFreq.zeros.toLocaleString()}                         color={C.muted} />
                 <StatItem label="FILL (0xFF)"     value={byteFreq.ffCount.toLocaleString()}                       color={C.muted} />
@@ -623,21 +933,24 @@ export default function DecoderScreen() {
                   </View>
                 )}
                 <Text style={fl.progTxt}>
-                  {isSending ? `${sendProgress.toFixed(1)}% — Step ${sendStep + 1}/8` :
-                   sendDone === true  ? "✓ Flash complete!" :
-                   sendDone === false ? "✗ Flash failed"    :
-                   `${N_FRAMES.toLocaleString()} frames · 128 KB`}
+                  {isSending
+                    ? `${sendProgress.toFixed(1)}% — Step ${sendStep + 1}/8${sendStep === 5 ? ` · Batch ${currentBatch + 1}/${N_BATCHES}` : ""}${sessionRetry > 0 ? ` · Session retry ${sessionRetry}` : ""}`
+                    : sendDone === true  ? "✓ OTA complete — firmware activated!"
+                    : sendDone === false ? "✗ OTA failed — check log"
+                    : `${N_BATCHES} batches · ${N_FRAMES.toLocaleString()} frames · 128 KB`}
                 </Text>
 
                 {/* Buttons */}
                 <View style={fl.btns}>
                   <Pressable
-                    style={[fl.btn, fl.btnFlash, isSending && { opacity: 0.6 }]}
+                    style={[fl.btn, fl.btnFlash, (isSending || !isConnected) && { opacity: 0.6 }]}
                     onPress={handleFlash}
                     disabled={isSending}
                   >
                     <MaterialCommunityIcons name={isSending ? "loading" : "flash"} size={13} color={C.bg} />
-                    <Text style={fl.btnFlashTxt}>{isSending ? "FLASHING…" : "FLASH BMS"}</Text>
+                    <Text style={fl.btnFlashTxt}>
+                      {isSending ? "OTA IN PROGRESS…" : isConnected ? "START OTA" : "CONNECT USB FIRST"}
+                    </Text>
                   </Pressable>
                   {isSending && (
                     <Pressable style={[fl.btn, fl.btnAbort]} onPress={() => { abortRef.current = true; }}>
@@ -646,14 +959,102 @@ export default function DecoderScreen() {
                   )}
                 </View>
 
-                {/* Log */}
+                {/* Mini log preview + View Log button */}
                 {sendLog.length > 0 && (
-                  <View style={fl.logBox}>
-                    {sendLog.slice(-12).map((l, i) => (
-                      <Text key={i} style={fl.logLine}>{l}</Text>
-                    ))}
-                  </View>
+                  <>
+                    <View style={fl.logBox}>
+                      {sendLog.slice(-4).map((l, i) => (
+                        <Text key={i} style={fl.logLine}>{l}</Text>
+                      ))}
+                    </View>
+                    <Pressable style={fl.viewLogBtn} onPress={() => setLogModalVisible(true)}>
+                      <MaterialCommunityIcons name="text-box-outline" size={11} color={C.blue} />
+                      <Text style={fl.viewLogTxt}>VIEW FULL OTA LOG ({sendLog.length} lines)</Text>
+                    </Pressable>
+                  </>
                 )}
+
+                {/* ── OTA Log Modal ── */}
+                <Modal
+                  visible={logModalVisible}
+                  animationType="slide"
+                  transparent
+                  onRequestClose={() => setLogModalVisible(false)}
+                >
+                  <View style={fl.modalOverlay}>
+                    <View style={fl.modalBox}>
+                      {/* Modal header */}
+                      <View style={fl.modalHead}>
+                        <MaterialCommunityIcons name="text-box-multiple-outline" size={16} color={C.green} />
+                        <Text style={fl.modalTitle}>OTA LOG</Text>
+                        <Text style={fl.modalCount}>{sendLog.length} lines</Text>
+                        <View style={{ flex: 1 }} />
+                        {/* Status badge */}
+                        <View style={[fl.modalBadge, {
+                          backgroundColor: sendDone === true ? "rgba(110,220,161,0.15)" : sendDone === false ? "rgba(255,80,60,0.12)" : "rgba(255,200,50,0.12)",
+                          borderColor:     sendDone === true ? "rgba(110,220,161,0.5)"  : sendDone === false ? "rgba(255,80,60,0.4)"  : "rgba(255,200,50,0.4)",
+                        }]}>
+                          <Text style={[fl.modalBadgeTxt, {
+                            color: sendDone === true ? C.green : sendDone === false ? C.red : C.yellow,
+                          }]}>
+                            {isSending ? "● RUNNING" : sendDone === true ? "✓ COMPLETE" : sendDone === false ? "✗ FAILED" : "IDLE"}
+                          </Text>
+                        </View>
+                        <Pressable style={fl.modalClose} onPress={() => setLogModalVisible(false)}>
+                          <MaterialCommunityIcons name="close" size={18} color={C.muted} />
+                        </Pressable>
+                      </View>
+
+                      {/* Progress bar */}
+                      {(isSending || sendDone !== null) && (
+                        <View style={fl.modalProgWrap}>
+                          <View style={[fl.modalProgBar, {
+                            width: `${sendProgress.toFixed(0)}%` as any,
+                            backgroundColor: sendDone === false ? C.red : C.green,
+                          }]} />
+                        </View>
+                      )}
+
+                      {/* Scrollable log */}
+                      <ScrollView
+                        style={fl.modalScroll}
+                        contentContainerStyle={fl.modalScrollContent}
+                        showsVerticalScrollIndicator
+                      >
+                        {sendLog.length === 0 ? (
+                          <Text style={fl.modalEmpty}>No log entries yet. Start OTA to see output.</Text>
+                        ) : (
+                          sendLog.map((line, i) => {
+                            const isError = line.includes("✗") || line.includes("FATAL") || line.includes("failed");
+                            const isOk    = line.includes("✓") || line.includes("OK") || line.includes("complete");
+                            const isStep  = line.startsWith(">>");
+                            const color   = isError ? C.red : isOk ? C.green : isStep ? C.yellow : "rgba(140,220,170,1)";
+                            return (
+                              <Text key={i} style={[fl.modalLogLine, { color }]}>
+                                <Text style={fl.modalLineNum}>{String(i + 1).padStart(3, " ")}  </Text>
+                                {line}
+                              </Text>
+                            );
+                          })
+                        )}
+                      </ScrollView>
+
+                      {/* Footer */}
+                      <View style={fl.modalFoot}>
+                        <Text style={fl.modalFootTxt}>
+                          {isSending
+                            ? `Step ${sendStep + 1}/8 · Batch ${currentBatch + 1}/${N_BATCHES} · ${sendProgress.toFixed(1)}%${sessionRetry > 0 ? ` · Retry ${sessionRetry}` : ""}`
+                            : sendDone === true ? "Firmware flashed and activated successfully"
+                            : sendDone === false ? "OTA failed — review log above"
+                            : "Ready"}
+                        </Text>
+                        <Pressable style={fl.modalCloseBtn} onPress={() => setLogModalVisible(false)}>
+                          <Text style={fl.modalCloseBtnTxt}>CLOSE</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </View>
+                </Modal>
               </>
             )}
           </ScrollView>
@@ -684,36 +1085,20 @@ export default function DecoderScreen() {
                 </Pressable>
               ))}
 
-              {/* SEND HEX button — sends hex bytes over USB */}
+              {/* SEND button — starts full BMS flash protocol */}
               {fileInfo && (
                 <Pressable
-                  style={[styles.modeBtn, { backgroundColor: "rgba(110,220,161,0.12)", borderColor: "rgba(110,220,161,0.45)" }]}
-                  onPress={handleSendHex}
+                  style={[styles.modeBtn, { backgroundColor: isSending ? "rgba(255,200,50,0.12)" : "rgba(110,220,161,0.12)", borderColor: isSending ? "rgba(255,200,50,0.45)" : "rgba(110,220,161,0.45)" }]}
+                  onPress={handleFlash}
                   disabled={isSending}
                 >
-                  <MaterialCommunityIcons name="upload-network-outline" size={11} color={C.green} />
-                  <Text style={[styles.modeTxt, { color: C.green }]}>SEND</Text>
+                  <MaterialCommunityIcons name={isSending ? "loading" : "upload-network-outline"} size={11} color={isSending ? C.yellow : C.green} />
+                  <Text style={[styles.modeTxt, { color: isSending ? C.yellow : C.green }]}>{isSending ? "SENDING…" : "SEND"}</Text>
                 </Pressable>
               )}
             </View>
 
-            <View style={styles.jumpRow}>
-              <Text style={styles.jumpLabel}>GOTO 0x</Text>
-              <TextInput
-                style={styles.jumpInput}
-                value={jumpTo}
-                onChangeText={setJumpTo}
-                placeholder="0000"
-                placeholderTextColor="rgba(60,62,62,1)"
-                onSubmitEditing={handleJump}
-                returnKeyType="go"
-                maxLength={8}
-                autoCapitalize="characters"
-              />
-              <Pressable style={styles.jumpBtn} onPress={handleJump}>
-                <MaterialCommunityIcons name="arrow-right" size={12} color={C.blue} />
-              </Pressable>
-            </View>
+
           </View>
 
           {/* Content */}
@@ -734,7 +1119,7 @@ export default function DecoderScreen() {
               </View>
 
               <ScrollView horizontal showsHorizontalScrollIndicator>
-                <HexTable bytes={fileInfo.bytes} mode={mode} searchQuery="" jumpOffset={jumpOffset} />
+                <HexTable bytes={fileInfo.bytes} mode={mode} searchQuery="" jumpOffset={0} />
               </ScrollView>
             </ScrollView>
           ) : (
@@ -760,7 +1145,7 @@ export default function DecoderScreen() {
                   { icon: "code-braces" as const,       label: "Hex View",     desc: "16-byte rows with offset column",  color: C.blue   },
                   { icon: "text-recognition" as const,   label: "ASCII Decode", desc: "View printable characters inline",  color: C.green  },
                   { icon: "chip" as const,               label: "Binary Mode",  desc: "Bit-level binary representation",   color: C.yellow },
-                  { icon: "flash" as const,              label: "Flash BMS",    desc: "8-step CAN bootloader protocol",    color: C.orange },
+                  { icon: "flash" as const,              label: "OTA Update",   desc: "8-step CAN bootloader with retry & resume", color: C.orange },
                 ].map(({ icon, label, desc, color }) => (
                   <View key={label} style={[styles.featureCard, { borderColor: `${color}30` }]}>
                     <View style={[styles.featureIcon, { backgroundColor: `${color}15` }]}>
@@ -773,6 +1158,22 @@ export default function DecoderScreen() {
               </View>
             </View>
           )}
+
+          {/* Live USB stream */}
+          <View style={styles.streamBox}>
+            <View style={styles.streamHead}>
+              <MaterialCommunityIcons name="broadcast" size={12} color={C.green} />
+              <Text style={styles.streamTitle}>LIVE USB STREAM</Text>
+              <Text style={styles.streamCount}>{packets.length} pkts · {fmtBytes(parsed.totalBytes)}</Text>
+            </View>
+            {parsed.lastPacketData ? (
+              <DataTicker data={parsed.lastPacketData} time={parsed.lastPacketTime} />
+            ) : (
+              <Text style={styles.streamEmpty}>
+                {isConnected ? "Waiting for data…" : "Connect a USB device to see data"}
+              </Text>
+            )}
+          </View>
 
           {/* Status strip */}
           <View style={[styles.statusStrip, { paddingBottom: Math.max(8, insets.bottom) }]}>
@@ -804,8 +1205,31 @@ const fl = StyleSheet.create({
   btnFlash: { backgroundColor: C.orange, borderColor: C.orange },
   btnFlashTxt: { color: "rgba(21,25,27,1)", fontSize: 11, fontWeight: "800", letterSpacing: 0.5 },
   btnAbort: { flex: 0, width: 34, backgroundColor: "rgba(255,80,60,0.1)", borderColor: "rgba(255,80,60,0.4)" },
-  logBox: { backgroundColor: "rgba(10,14,16,1)", borderRadius: 6, borderWidth: 1, borderColor: C.border, padding: 8, marginTop: 8, gap: 1, maxHeight: 140 },
+  logBox: { backgroundColor: "rgba(10,14,16,1)", borderRadius: 6, borderWidth: 1, borderColor: C.border, padding: 8, marginTop: 8, gap: 1, maxHeight: 80 },
   logLine: { color: "rgba(140,220,170,1)", fontSize: 8, fontFamily: "monospace", lineHeight: 13 },
+  viewLogBtn: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 5, paddingVertical: 5, paddingHorizontal: 8, borderRadius: 6, borderWidth: 1, borderColor: "rgba(80,180,255,0.3)", backgroundColor: "rgba(80,180,255,0.08)" },
+  viewLogTxt: { color: C.blue, fontSize: 9, fontWeight: "700", letterSpacing: 0.4 },
+
+  // ── OTA Log Modal ──
+  modalOverlay:    { flex: 1, backgroundColor: "rgba(0,0,0,0.75)", justifyContent: "flex-end" },
+  modalBox:        { backgroundColor: "rgba(14,18,20,1)", borderTopLeftRadius: 16, borderTopRightRadius: 16, borderWidth: 1, borderColor: C.border, maxHeight: "85%", minHeight: "60%" },
+  modalHead:       { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: C.border },
+  modalTitle:      { color: C.text, fontSize: 14, fontWeight: "800", letterSpacing: 0.5 },
+  modalCount:      { color: C.muted, fontSize: 10 },
+  modalBadge:      { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, borderWidth: 1 },
+  modalBadgeTxt:   { fontSize: 9, fontWeight: "700", letterSpacing: 0.5 },
+  modalClose:      { padding: 4 },
+  modalProgWrap:   { height: 3, backgroundColor: C.border, overflow: "hidden" },
+  modalProgBar:    { height: "100%" },
+  modalScroll:     { flex: 1 },
+  modalScrollContent: { padding: 12, gap: 1 },
+  modalEmpty:      { color: C.muted, fontSize: 11, fontStyle: "italic", textAlign: "center", marginTop: 40 },
+  modalLogLine:    { fontSize: 10, fontFamily: "monospace", lineHeight: 16 },
+  modalLineNum:    { color: "rgba(60,62,62,1)", fontSize: 9 },
+  modalFoot:       { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingVertical: 10, borderTopWidth: 1, borderTopColor: C.border },
+  modalFootTxt:    { flex: 1, color: C.muted, fontSize: 9 },
+  modalCloseBtn:   { backgroundColor: C.orange, borderRadius: 8, paddingHorizontal: 16, paddingVertical: 8 },
+  modalCloseBtnTxt:{ color: "rgba(21,25,27,1)", fontSize: 11, fontWeight: "800", letterSpacing: 0.5 },
 });
 
 const styles = StyleSheet.create({
@@ -838,10 +1262,6 @@ const styles = StyleSheet.create({
   modeRow: { flexDirection: "row", gap: 5, flexWrap: "wrap" },
   modeBtn: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, borderWidth: 1, flexDirection: "row", alignItems: "center", gap: 4 },
   modeTxt: { fontSize: 9, fontWeight: "700", letterSpacing: 0.5 },
-  jumpRow: { flexDirection: "row", alignItems: "center", gap: 5 },
-  jumpLabel: { color: C.muted, fontSize: 9, fontWeight: "600", letterSpacing: 0.3 },
-  jumpInput: { backgroundColor: C.row, borderRadius: 5, borderWidth: 1, borderColor: C.border, paddingHorizontal: 8, paddingVertical: 3, color: C.blue, fontSize: 11, width: 60 },
-  jumpBtn: { backgroundColor: "rgba(80,180,255,0.15)", borderRadius: 5, padding: 5, borderWidth: 1, borderColor: "rgba(80,180,255,0.3)" },
 
   hexArea: { flex: 1 },
   hexContent: { padding: 10, gap: 8 },
@@ -863,6 +1283,12 @@ const styles = StyleSheet.create({
   featureIcon: { width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   featureLabel: { color: C.text, fontSize: 12, fontWeight: "700" },
   featureDesc: { color: C.muted, fontSize: 10 },
+
+  streamBox:   { flexDirection: "column", gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: "rgba(14,18,20,1)" },
+  streamHead:  { flexDirection: "row", alignItems: "center", gap: 6 },
+  streamTitle: { color: C.green, fontSize: 9, fontWeight: "700", letterSpacing: 0.8, flex: 1 },
+  streamCount: { color: C.muted, fontSize: 9 },
+  streamEmpty: { color: C.muted, fontSize: 9, fontStyle: "italic" },
 
   statusStrip: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingTop: 6, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: "rgba(22,26,28,1)" },
   statusDot: { width: 6, height: 6, borderRadius: 3 },

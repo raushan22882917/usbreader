@@ -486,13 +486,15 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
   // ── Write ────────────────────────────────────────────────────────────────────
   const writeData = useCallback(async (hexData: string) => {
     const dev = selectedDeviceRef.current;
-    if (!dev) return;
+    if (!dev?.connected) throw new Error('No USB device connected');
 
     if (Platform.OS === 'android') {
       await USBSerialService.write(hexData);
     } else if (Platform.OS === 'web' && webUsbDeviceRef.current && webUsbEndpointOutRef.current !== null) {
       const bytes = new Uint8Array(hexData.match(/.{1,2}/g)!.map(b => parseInt(b, 16)));
-      try { await webUsbDeviceRef.current.transferOut(webUsbEndpointOutRef.current, bytes); } catch {}
+      await webUsbDeviceRef.current.transferOut(webUsbEndpointOutRef.current, bytes);
+    } else {
+      throw new Error('USB write not supported on this platform');
     }
 
     // Record TX packet

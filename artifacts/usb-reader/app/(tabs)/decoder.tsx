@@ -42,20 +42,30 @@ const C = {
 const FLASH_SIZE       = 131072;    // 128 KB
 const DATA_PER_FRAME   = 4;         // 4 B firmware payload per CAN seq (8 B CAN frame total)
 const N_FRAMES         = FLASH_SIZE / DATA_PER_FRAME; // 32768
-// Matches ESP32 BATCH_SIZE and Python: 128 KB / 4 B = 32768 frames, 512 batches.
-const FRAMES_PER_BATCH = 64;
-const N_BATCHES        = N_FRAMES / FRAMES_PER_BATCH; // 512
+// Matches ESP32 BATCH_SIZE: 128 KB / 4 B = 32768 frames, 32 batches × 1024 frames.
+const FRAMES_PER_BATCH = 1024;
+const N_BATCHES        = N_FRAMES / FRAMES_PER_BATCH; // 32
 
-// false = 8 frames/UART line (~220 B, fits ESP32 default RX). true = 64 frames/line (needs setRxBufferSize(4096)).
-const OTA_FULL_BATCH_MODE = false;
+// USB CDC: one newline-terminated JSON line per command (ESP32 rxBuffer 65536).
+// true = 1024 frames/line (~20 KB, needs JSON_RX_DOC_SIZE 131072 on ESP32 + PSRAM recommended).
+const OTA_FULL_BATCH_MODE = true;
 const FRAMES_PER_UART_MSG = OTA_FULL_BATCH_MODE ? FRAMES_PER_BATCH : 8;
 const UART_MSGS_PER_BATCH = FRAMES_PER_BATCH / FRAMES_PER_UART_MSG;
 
-// Timeouts (ms)
-const TIMEOUT_READY_MS   = 5000;
-const TIMEOUT_UART_MSG_MS = OTA_FULL_BATCH_MODE ? 130000 : 25000;
-const TIMEOUT_VERIFY_MS  = 15000;
-const UART_MSG_GAP_MS    = 20;
+// CDC pacing (must match ESP32 start "pacing" field, microseconds between CAN frames)
+const CDC_CAN_PACING_US = 80;
+const CDC_RX_LINE_MAX = 65536;
+
+// Timeouts (ms) — batch timeout scales with frame count (1024 frames ≈ 86s at 80µs pacing)
+const TIMEOUT_READY_MS = 30000;
+const TIMEOUT_VERIFY_MS = 15000;
+const UART_MSG_GAP_MS = 0;
+const OTA_LOG_EVERY_N_BATCHES = 4;
+
+function batchTimeoutMs(frameCount: number): number {
+  const canMs = Math.ceil((frameCount * CDC_CAN_PACING_US) / 1000) + 5000;
+  return Math.min(180000, Math.max(20000, canMs));
+}
 
 // Retry limits
 const MAX_BATCH_RETRIES   = 3;
@@ -74,10 +84,8 @@ function crc32(buf: Uint8Array): number {
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
 
-// ── Encode a UTF-8 string to a lowercase hex string ──────────
-// UsbContext.writeData() expects a hex-encoded byte string (e.g. "7b22636d64...").
-// ESP32 Serial.readStringUntil('\n') reads raw bytes, so we encode the JSON
-// text + newline terminator as hex before handing it to writeData().
+// ── Encode UTF-8 for USB CDC write path ──────────────────────
+// UsbContext.writeData() expects hex bytes. ESP32 reads CDC until '\n' per line.
 function strToHex(str: string): string {
   let hex = "";
   for (let i = 0; i < str.length; i++) {
@@ -108,6 +116,35 @@ function summarizeOtaJson(obj: Record<string, unknown>): string {
     return JSON.stringify({ ...obj, frames: `[${frames.length} frames]` });
   }
   return JSON.stringify(obj);
+}
+
+/** Parse one CDC line; tolerate trailing garbage after closing '}'. */
+function parseCdcJsonLine(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    let depth = 0;
+    let start = -1;
+    for (let i = 0; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (ch === "{") {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0 && start >= 0) {
+          try {
+            return JSON.parse(trimmed.slice(start, i + 1)) as Record<string, unknown>;
+          } catch {
+            start = -1;
+          }
+        }
+      }
+    }
+    return null;
+  }
 }
 
 type ViewMode = "hex" | "binary" | "decimal" | "ascii";
@@ -337,7 +374,7 @@ const FLASH_STEPS = [
   "ESP32: SYNC + ANNOUNCE",
   "ESP32: DEVICE INFO",
   "ESP32: UNLOCK → Ready",
-  "DATA (512×64, 8 frames/msg)",
+  "DATA (32×1024, CDC)",
   "VERIFY CRC32",
   "COMPLETE (Activated)",
 ];
@@ -447,9 +484,11 @@ export default function DecoderScreen() {
 
   // ── ESP32 BMS Flash Bridge (matches Python flash_bms + ESP32 firmware v2) ──
   //   start:  {"cmd":"start","crc32":N,"total":32768}
-  //   data:   {"cmd":"data","batch":B,"frames":[[d0,d1,d2,d3],...]}  // up to 64
-  //   partial retry: same + optional "from":F  (ESP32: seq = B*64 + F + i)
-  //   verify: {"cmd":"verify"}
+  // USB CDC protocol (one JSON line + \n per command/response):
+  //   start:  {"cmd":"start","crc32":N,"total":32768,"pacing":500}
+  //   data:   {"cmd":"data","batch":B,"frames":[[d0,d1,d2,d3],...]}  // up to 1024
+  //   partial: {"cmd":"data","batch":B,"from":F,"frames":[...]}       // seq = B*1024+F
+  //   verify: {"cmd":"verify"} | abort | status
   const log = (msg: string) =>
     setSendLog((prev) => [...prev.slice(-49), msg]);
 
@@ -490,30 +529,32 @@ export default function DecoderScreen() {
 
     const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-    // Newline-terminated JSON; stream bytes so ESP32 UART FIFO (128 B) is not overrun.
-    const UART_WRITE_CHUNK = 32;
-    const UART_WRITE_GAP_MS = 5;
+    // CDC TX: one JSON line + \n; larger chunks, minimal gaps.
+    const CDC_TX_CHUNK = 256;
+    const CDC_TX_GAP_MS = 1;
 
-    const sendCmd = async (obj: Record<string, unknown>) => {
+    const sendCdcLine = async (obj: Record<string, unknown>, quiet = false) => {
       if (!isUsbConnected()) {
         throw new Error("USB disconnected during OTA");
       }
-      const json = JSON.stringify(obj);
-      log(`→ ${summarizeOtaJson(obj)} (${json.length} B)`);
-      const hex = strToHex(json + "\n");
-      const hexChunkSize = UART_WRITE_CHUNK * 2;
+      const line = JSON.stringify(obj) + "\n";
+      if (line.length > CDC_RX_LINE_MAX) {
+        throw new Error(`CDC line too long (${line.length} B > ${CDC_RX_LINE_MAX})`);
+      }
+      if (!quiet) log(`→ ${summarizeOtaJson(obj)} (${line.length} B)`);
+      const hex = strToHex(line);
+      const hexChunkSize = CDC_TX_CHUNK * 2;
       for (let i = 0; i < hex.length; i += hexChunkSize) {
         await writeData(hex.slice(i, i + hexChunkSize));
-        if (i + hexChunkSize < hex.length) await delay(UART_WRITE_GAP_MS);
+        if (i + hexChunkSize < hex.length) await delay(CDC_TX_GAP_MS);
       }
-      await delay(Math.max(15, Math.ceil(json.length / 35)));
+      await delay(Math.max(8, Math.ceil(line.length / 120)));
     };
 
-    // Session UART listener — armed BEFORE each send so fast ESP32 replies are not missed.
-    const IGNORED_STATUSES = new Set(["boot", "aborted"]);
     const STRAY_AFTER_HANDSHAKE = new Set(["boot", "aborted", "ready"]);
 
     let sessionRxText = "";
+    const pendingResponses: Record<string, unknown>[] = [];
     let jsonWaiter: {
       resolve: (obj: Record<string, unknown>) => void;
       reject: (err: Error) => void;
@@ -521,70 +562,99 @@ export default function DecoderScreen() {
     } | null = null;
     let handshakeDone = false;
 
-    const deliverJson = (obj: Record<string, unknown>) => {
+    const deliverJson = (obj: Record<string, unknown>, quiet = false) => {
       if (!jsonWaiter) {
         if (handshakeDone && obj.status && STRAY_AFTER_HANDSHAKE.has(obj.status as string)) return;
+        pendingResponses.push(obj);
         return;
       }
       clearTimeout(jsonWaiter.timer);
       const w = jsonWaiter;
       jsonWaiter = null;
-      log(`   ← ${JSON.stringify(obj)}`);
+      if (!quiet) log(`   ← ${JSON.stringify(obj)}`);
       w.resolve(obj);
     };
 
-    const onSessionHex = (hexData: string) => {
+    const drainCdcLines = (quiet = false) => {
+      let nl = sessionRxText.indexOf("\n");
+      while (nl >= 0) {
+        const raw = sessionRxText.slice(0, nl).replace(/\r$/, "").trim();
+        sessionRxText = sessionRxText.slice(nl + 1);
+        if (raw.length > 0) {
+          const obj = parseCdcJsonLine(raw);
+          if (obj && (obj.status !== undefined || obj.state !== undefined)) {
+            deliverJson(obj, quiet);
+          } else if (!quiet && raw.startsWith("{")) {
+            log(`   ✗ CDC RX unhandled: ${raw.slice(0, 96)}…`);
+          }
+        }
+        nl = sessionRxText.indexOf("\n");
+      }
+      if (sessionRxText.length > CDC_RX_LINE_MAX) sessionRxText = "";
+    };
+
+    const onSessionCdcHex = (hexData: string) => {
       if (abortRef.current && jsonWaiter) {
         jsonWaiter.reject(new Error("Aborted"));
         jsonWaiter = null;
         return;
       }
       let chunk = "";
-      for (let i = 0; i < hexData.length; i += 2)
+      for (let i = 0; i < hexData.length; i += 2) {
         chunk += String.fromCharCode(parseInt(hexData.substring(i, i + 2), 16));
-      sessionRxText += chunk;
-
-      let depth = 0, start = -1;
-      for (let i = 0; i < sessionRxText.length; i++) {
-        const ch = sessionRxText[i];
-        if (ch === "{") { if (depth === 0) start = i; depth++; }
-        else if (ch === "}") {
-          depth--;
-          if (depth === 0 && start !== -1) {
-            try {
-              const obj = JSON.parse(sessionRxText.slice(start, i + 1)) as Record<string, unknown>;
-              sessionRxText = sessionRxText.slice(i + 1);
-              if (obj.status !== undefined || obj.state !== undefined) deliverJson(obj);
-            } catch { /* partial JSON — keep buffering */ }
-            start = -1;
-          }
-        }
       }
+      sessionRxText += chunk;
+      drainCdcLines(false);
     };
 
-    const armJsonWait = (timeoutMs: number): Promise<Record<string, unknown>> =>
-      new Promise((resolve, reject) => {
+    const armJsonWait = (timeoutMs: number): Promise<Record<string, unknown>> => {
+      if (pendingResponses.length > 0) {
+        const obj = pendingResponses.shift()!;
+        return Promise.resolve(obj);
+      }
+      return new Promise((resolve, reject) => {
         if (abortRef.current) { reject(new Error("Aborted")); return; }
         if (jsonWaiter) reject(new Error("Internal: response waiter already active"));
         const timer = setTimeout(() => {
           if (!jsonWaiter) return;
+          drainCdcLines(true);
+          if (pendingResponses.length > 0) {
+            const obj = pendingResponses.shift()!;
+            jsonWaiter.resolve(obj);
+            jsonWaiter = null;
+            return;
+          }
           jsonWaiter.reject(new Error(`ESP32 timeout (${timeoutMs}ms) — no response`));
           jsonWaiter = null;
         }, timeoutMs);
         jsonWaiter = { resolve, reject, timer };
       });
+    };
 
     /** Listen first, then send — prevents lost responses on small/fast replies. */
     const sendAndWait = async (
       obj: Record<string, unknown>,
       timeoutMs: number,
+      quiet = false,
     ) => {
+      sessionRxText = "";
+      if (obj.cmd === "data" && typeof obj.batch === "number") {
+        const wantBatch = obj.batch as number;
+        for (let i = pendingResponses.length - 1; i >= 0; i--) {
+          const p = pendingResponses[i];
+          if ((p.status === "ok" || p.status === "retry") && p.batch !== wantBatch) {
+            pendingResponses.splice(i, 1);
+          }
+        }
+      } else {
+        pendingResponses.length = 0;
+      }
       const respPromise = armJsonWait(timeoutMs);
-      await sendCmd(obj);
+      await sendCdcLine(obj, quiet);
       return respPromise;
     };
 
-    const sessionUnsub = USBSerialService.onData(onSessionHex);
+    const sessionUnsub = USBSerialService.onData(onSessionCdcHex);
 
     // ── Phase 1: Start — ESP32 runs init autonomously ────
     // Android sends {"cmd":"start","crc32":N,"total":32768}
@@ -598,13 +668,21 @@ export default function DecoderScreen() {
           await delay(500);
         }
         setSendStep(0);
-        log(`>> [1/4] START — crc32=0x${checksum.toString(16).toUpperCase().padStart(8, "0")} total=${N_FRAMES}`);
+        log(
+          `>> [1/4] START — crc32=0x${checksum.toString(16).toUpperCase().padStart(8, "0")} ` +
+          `total=${N_FRAMES} pacing=${CDC_CAN_PACING_US}us`,
+        );
         setSendStep(4);
         log(`   Waiting for ESP32 init (PING → SYNC → ANNOUNCE → UNLOCK)…`);
 
         try {
           const resp = await sendAndWait(
-            { cmd: "start", crc32: checksum >>> 0, total: N_FRAMES },
+            {
+              cmd: "start",
+              crc32: checksum >>> 0,
+              total: N_FRAMES,
+              pacing: CDC_CAN_PACING_US,
+            },
             TIMEOUT_READY_MS,
           );
           if (resp.status === "ready") {
@@ -626,7 +704,7 @@ export default function DecoderScreen() {
 
     // ── Phase 2: DATA — Python-style CAN via JSON bridge ─────────────────────
     // {"cmd":"data","batch":B,"from":F,"frames":[[d0,d1,d2,d3],...]}
-    // ESP32: seq=B*64+F → CAN [A1 seq_lo E2 04 d0 d1 d2 d3]  (byte 2 must be 0xE2)
+    // ESP32: seq=B*1024+F → CAN [A1 seq_lo E2 04 d0 d1 d2 d3]  (byte 2 must be 0xE2)
     const sendBatch = async (
       batchIdx: number,
       fromFrame = 0,
@@ -651,8 +729,15 @@ export default function DecoderScreen() {
           const pf = frames[0];
           const seqLo = (globalSeq & 0xFF).toString(16).padStart(2, "0").toUpperCase();
 
+          const quietBatch =
+            batchRetries === 0 &&
+            fi === 0 &&
+            batchIdx % OTA_LOG_EVERY_N_BATCHES !== 0 &&
+            batchIdx !== 0 &&
+            batchIdx !== N_BATCHES - 1;
+
           const lineNum = Math.floor(fi / FRAMES_PER_UART_MSG) + 1;
-          if (fi === resumeFrom || lineNum === 1 || fi + FRAMES_PER_UART_MSG >= FRAMES_PER_BATCH) {
+          if (!quietBatch && (fi === resumeFrom || lineNum === 1 || fi + FRAMES_PER_UART_MSG >= FRAMES_PER_BATCH)) {
             log(
               `→ batch=${batchIdx} from=${fi} msg ${lineNum}/${UART_MSGS_PER_BATCH} ` +
               `(frames ${fi + 1}-${fi + frames.length}/${FRAMES_PER_BATCH}) ` +
@@ -660,17 +745,17 @@ export default function DecoderScreen() {
             );
           }
 
+          const dataCmd: Record<string, unknown> = { cmd: "data", batch: batchIdx, frames };
+          if (fi > 0) dataCmd.from = fi;
+
           let resp: Record<string, unknown>;
           try {
-            resp = await sendAndWait(
-              { cmd: "data", batch: batchIdx, from: fi, frames },
-              TIMEOUT_UART_MSG_MS,
-            );
+            resp = await sendAndWait(dataCmd, batchTimeoutMs(count), quietBatch);
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
             log(`   ✗ batch=${batchIdx} from=${fi}: ${msg}`);
             if (fi === 0 && batchRetries === 0) {
-              log(`   ⚠ Flash ESP32: 0xE2 in CAN byte 2, from field, setRxBufferSize(4096) — see firmware/ESP32_BmsFlashBridge_patches.cpp`);
+              log(`   ⚠ Flash ESP32 firmware ESP32_BmsFlashBridge_fixed.ino (boot: version 2.2-cdc)`);
             }
             resumeFrom = fi;
             batchRetries++;
@@ -686,7 +771,9 @@ export default function DecoderScreen() {
             );
             if (batchDone) {
               const next = (resp.next as number) ?? (batchIdx + 1) * FRAMES_PER_BATCH;
-              log(`   ✓ batch=${batchIdx} next=${next} progress=${progress.toFixed(1)}%`);
+              if (!quietBatch || batchIdx % OTA_LOG_EVERY_N_BATCHES === 0 || batchIdx === N_BATCHES - 1) {
+                log(`   ✓ batch=${batchIdx} next=${next} progress=${progress.toFixed(1)}%`);
+              }
               return { ok: true, failedFrame: -1 };
             }
             await delay(UART_MSG_GAP_MS);
@@ -745,7 +832,7 @@ export default function DecoderScreen() {
         setSendStep(5);
         log(
           `>> [2/4] DATA — ${N_BATCHES} batches × ${FRAMES_PER_BATCH} frames ` +
-          `(${FRAMES_PER_UART_MSG} frames/UART msg, CAN: A1 xx E2 04)`,
+          `(${FRAMES_PER_UART_MSG} frames/CDC line, CAN: A1 xx E2 04)`,
         );
 
         let dataOk = true;

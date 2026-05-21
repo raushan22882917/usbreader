@@ -1,13 +1,9 @@
 /*
  * ESP32 BMS Flash Bridge — USB CDC newline JSON ↔ TWAI/CAN
  *
- * Android App ──USB CDC (Serial)──► ESP32 ──TWAI/CAN──► BMS
- *
- * Commands (one JSON object per line, terminated with \n):
- *   {"cmd":"start","crc32":N,"total":32768,"pacing":500,"bench":false}
- *   {"cmd":"data","batch":0,"frames":[[d0,d1,d2,d3],...]}   // 1–1024 frames
- *   {"cmd":"data","batch":0,"from":8,"frames":[...]}        // optional partial batch
- *   {"cmd":"verify"} | {"cmd":"status"} | {"cmd":"abort"}
+ *   {"cmd":"data","batch":0,"b64":"AQIDBA..."}              // preferred (~5.5 KB for 1024 frames)
+ *   {"cmd":"data","batch":0,"from":64,"b64":"..."}          // partial retry
+ *   {"cmd":"data","batch":0,"frames":[[d0,d1,d2,d3],...]}   // legacy (keep lines < 16 KB)
  */
 
 #include <Arduino.h>
@@ -16,9 +12,10 @@
 
 #define UART_BAUD 115200
 
-#define JSON_RX_DOC_SIZE 131072
+#define JSON_RX_DOC_B64 12288
+#define JSON_RX_DOC_SMALL 8192
 #define JSON_TX_DOC_SIZE 256
-#define CDC_RX_LINE_MAX 65536
+#define CDC_RX_LINE_MAX 20480
 
 #define CAN_TX_PIN GPIO_NUM_21
 #define CAN_RX_PIN GPIO_NUM_20
@@ -154,9 +151,17 @@ bool canRx(uint32_t expectedId, const uint8_t *expectedData,
   return false;
 }
 
-void sendJsonLine(StaticJsonDocument<JSON_TX_DOC_SIZE> &doc) {
-  serializeJson(doc, Serial);
-  Serial.println();
+template <typename T>
+void sendJsonResponse(T &doc) {
+  char txBuf[JSON_TX_DOC_SIZE];
+  size_t len = serializeJson(doc, txBuf, sizeof(txBuf));
+  if (len < sizeof(txBuf) - 1) {
+    txBuf[len++] = '\n';
+    Serial.write((const uint8_t *)txBuf, len);
+  } else {
+    serializeJson(doc, Serial);
+    Serial.println();
+  }
   Serial.flush();
 }
 
@@ -164,7 +169,7 @@ void sendReady() {
   StaticJsonDocument<JSON_TX_DOC_SIZE> doc;
   doc["status"] = "ready";
   doc["msg"] = "unlocked";
-  sendJsonLine(doc);
+  sendJsonResponse(doc);
 }
 
 void sendBatchOk(uint32_t batch, uint32_t next, float progress) {
@@ -172,9 +177,8 @@ void sendBatchOk(uint32_t batch, uint32_t next, float progress) {
   doc["status"] = "ok";
   doc["batch"] = batch;
   doc["next"] = next;
-  // Integer tenths avoids float noise breaking Android JSON.parse (e.g. 48.40000153)
   doc["progress"] = ((int)(progress * 10.0f + 0.5f)) / 10.0f;
-  sendJsonLine(doc);
+  sendJsonResponse(doc);
 }
 
 void sendRetry(uint32_t batch, uint32_t fromFrame) {
@@ -182,14 +186,14 @@ void sendRetry(uint32_t batch, uint32_t fromFrame) {
   doc["status"] = "retry";
   doc["batch"] = batch;
   doc["from"] = fromFrame;
-  sendJsonLine(doc);
+  sendJsonResponse(doc);
 }
 
 void sendError(const char *msg) {
   StaticJsonDocument<JSON_TX_DOC_SIZE> doc;
   doc["status"] = "error";
   doc["msg"] = msg;
-  sendJsonLine(doc);
+  sendJsonResponse(doc);
   currentState = STATE_ERROR;
   errorMsg = msg;
 }
@@ -197,7 +201,7 @@ void sendError(const char *msg) {
 void sendComplete() {
   StaticJsonDocument<JSON_TX_DOC_SIZE> doc;
   doc["status"] = "complete";
-  sendJsonLine(doc);
+  sendJsonResponse(doc);
   currentState = STATE_COMPLETE;
 }
 
@@ -207,7 +211,7 @@ void sendStatus() {
   doc["frames_sent"] = framesSent;
   doc["total_frames"] = totalFrames;
   if (currentState == STATE_ERROR) doc["error"] = errorMsg;
-  sendJsonLine(doc);
+  sendJsonResponse(doc);
 }
 
 bool doHandshake() {
@@ -232,23 +236,17 @@ bool doHandshake() {
     uint8_t d[] = {0xB1};
     canFlushRx();
     if (!canTx(ID_BUS, d, 1)) { sendError("ANNOUNCE TX failed"); return false; }
-    // uint8_t echoExp[] = {0xB1};
-    // if (!canRx(ID_BUS, echoExp, 1, ANNOUNCE_TIMEOUT_MS)) { sendError("No BMS echo [B1]"); return false; }
-    // uint8_t infoExp[] = {0x11};
-    // if (!canRx(ID_INFO, infoExp, 1, INFO_TIMEOUT_MS)) { sendError("No device info [11]"); return false; }
   }
 
   {
     uint8_t d[] = {CMD_UNLOCK, 0x00, 0xE2, 0x04, 0x00, 0x00, 0x02, 0x00};
     if (!canTx(ID_BUS, d, 8)) { sendError("UNLOCK TX failed"); return false; }
-    // uint8_t ack[] = {ACK_OK};
-    // if (!canRx(ID_BUS, ack, 1, ACK_TIMEOUT_MS)) { sendError("No UNLOCK ACK [50]"); return false; }
   }
 
   return true;
 }
 
-// CAN DATA: [A1 seq_lo 0xE2 0x04 d0 d1 d2 d3] — byte 2 is always 0xE2
+// CAN DATA: [A1 seq_lo 0xE2 0x04 d0 d1 d2 d3]
 int sendBatchToCan(uint32_t startSeq, const uint8_t frames[][DATA_PER_FRAME],
                    uint16_t count) {
   for (uint16_t i = 0; i < count; i++) {
@@ -264,12 +262,9 @@ int sendBatchToCan(uint32_t startSeq, const uint8_t frames[][DATA_PER_FRAME],
 
     if (!canTx(ID_BUS, canFrame, 8)) return (int)i;
 
-    // uint8_t ack[] = {ACK_OK};
-    // if (!canRx(ID_BUS, ack, 1, ACK_TIMEOUT_MS)) return (int)i;
-
     if (!benchMode && pacingUs > 0) delayMicroseconds(pacingUs);
 
-    framesSent++;
+    if (seq + 1 > framesSent) framesSent = seq + 1;
   }
   return -1;
 }
@@ -288,16 +283,60 @@ void handleStart(uint32_t crc32, uint32_t total, uint32_t pacing, bool bench) {
   sendReady();
 }
 
+static const int8_t b64Lut[128] = {
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
+    52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+    -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+    15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+    -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+    41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1
+};
+
+int b64Decode(const char *input, uint8_t *output, size_t maxOut) {
+  size_t len = strlen(input);
+  while (len > 0 && input[len - 1] == '=') len--;
+
+  size_t outLen = 0;
+  uint32_t accum = 0;
+  uint8_t bits = 0;
+
+  for (size_t i = 0; i < len; i++) {
+    uint8_t c = (uint8_t)input[i];
+    if (c >= 128) return -1;
+    int8_t val = b64Lut[c];
+    if (val < 0) return -1;
+
+    accum = (accum << 6) | (uint32_t)val;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (outLen >= maxOut) return -1;
+      output[outLen++] = (uint8_t)((accum >> bits) & 0xFF);
+    }
+  }
+  return (int)outLen;
+}
+
+void finishDataBatch(uint32_t batchIndex, uint32_t fromFrame, uint16_t count) {
+  uint32_t startSeq = batchIndex * BATCH_SIZE + fromFrame;
+  float progress = totalFrames > 0 ? (framesSent * 100.0f) / totalFrames : 0.0f;
+  uint32_t next = startSeq + count;
+  sendBatchOk(batchIndex, next, progress);
+  currentState = STATE_READY;
+}
+
 void handleDataBatch(uint32_t batchIndex, uint32_t fromFrame, JsonArray &framesArr) {
   if (currentState != STATE_READY && currentState != STATE_DATA) {
-    sendError("Not ready for data — run start first");
+    sendError("Not ready for data");
     return;
   }
   currentState = STATE_DATA;
 
   size_t frameCount = framesArr.size();
   if (frameCount == 0 || frameCount > BATCH_SIZE) {
-    sendError("Batch size must be 1–1024 frames");
+    sendError("Batch size must be 1-1024 frames");
     return;
   }
   uint16_t count = (uint16_t)frameCount;
@@ -306,7 +345,7 @@ void handleDataBatch(uint32_t batchIndex, uint32_t fromFrame, JsonArray &framesA
     return;
   }
 
-  uint8_t frames[BATCH_SIZE][DATA_PER_FRAME];
+  static uint8_t frames[BATCH_SIZE][DATA_PER_FRAME];
   for (uint16_t i = 0; i < count; i++) {
     JsonArray row = framesArr[i].as<JsonArray>();
     if (row.size() != DATA_PER_FRAME) {
@@ -319,16 +358,46 @@ void handleDataBatch(uint32_t batchIndex, uint32_t fromFrame, JsonArray &framesA
 
   uint32_t startSeq = batchIndex * BATCH_SIZE + fromFrame;
   int failAt = sendBatchToCan(startSeq, frames, count);
-
   if (failAt >= 0) {
     sendRetry(batchIndex, fromFrame + (uint32_t)failAt);
     return;
   }
 
-  float progress = totalFrames > 0 ? (framesSent * 100.0f) / totalFrames : 0.0f;
-  uint32_t next = startSeq + count;
-  sendBatchOk(batchIndex, next, progress);
-  currentState = STATE_READY;
+  finishDataBatch(batchIndex, fromFrame, count);
+}
+
+void handleDataBatchB64(uint32_t batchIndex, uint32_t fromFrame, const char *b64Str) {
+  if (currentState != STATE_READY && currentState != STATE_DATA) {
+    sendError("Not ready for data");
+    return;
+  }
+  currentState = STATE_DATA;
+
+  static uint8_t rawBuf[BATCH_SIZE * DATA_PER_FRAME];
+  int decoded = b64Decode(b64Str, rawBuf, sizeof(rawBuf));
+  if (decoded < 0 || decoded == 0) {
+    sendError("Base64 decode error");
+    return;
+  }
+  if (decoded % DATA_PER_FRAME != 0) {
+    sendError("b64 length must be multiple of 4 bytes");
+    return;
+  }
+
+  uint16_t count = (uint16_t)(decoded / DATA_PER_FRAME);
+  if (count == 0 || count > BATCH_SIZE || fromFrame + count > BATCH_SIZE) {
+    sendError("Invalid b64 batch size");
+    return;
+  }
+
+  uint32_t startSeq = batchIndex * BATCH_SIZE + fromFrame;
+  int failAt = sendBatchToCan(startSeq, (const uint8_t(*)[DATA_PER_FRAME])rawBuf, count);
+  if (failAt >= 0) {
+    sendRetry(batchIndex, fromFrame + (uint32_t)failAt);
+    return;
+  }
+
+  finishDataBatch(batchIndex, fromFrame, count);
 }
 
 void handleVerify() {
@@ -354,12 +423,6 @@ void handleVerify() {
     return;
   }
 
-  // uint8_t crcAck[] = {ACK_CRC_OK};
-  // if (!canRx(ID_BUS, crcAck, 1, CRC_TIMEOUT_MS)) {
-  //   sendError("No CRC ACK [53]");
-  //   return;
-  // }
-
   uint8_t goFrame[8] = {CMD_GO, 0x00, 0xE2, 0x00, 0x00, 0x00, 0x00, 0x00};
   if (!canTx(ID_BUS, goFrame, 8)) {
     sendError("GO TX failed");
@@ -382,19 +445,23 @@ void handleAbort() {
   pacingUs = 500;
   StaticJsonDocument<JSON_TX_DOC_SIZE> doc;
   doc["status"] = "aborted";
-  sendJsonLine(doc);
+  sendJsonResponse(doc);
 }
 
 void processJsonCommand(const String &line) {
-  DynamicJsonDocument doc(JSON_RX_DOC_SIZE);
+  if (line.length() >= CDC_RX_LINE_MAX) {
+    sendError("Line too long for RX buffer — use b64");
+    return;
+  }
+
+  bool isB64 = line.indexOf("\"b64\"") >= 0;
+  size_t docSize = isB64 ? JSON_RX_DOC_B64 : JSON_RX_DOC_SMALL;
+
+  DynamicJsonDocument doc(docSize);
   DeserializationError err = deserializeJson(doc, line);
   if (err) {
-    if (err == DeserializationError::NoMemory)
-      sendError("JSON parse error: NoMemory");
-    else if (err == DeserializationError::IncompleteInput)
-      sendError("JSON parse error: IncompleteInput");
-    else
-      sendError("JSON parse error");
+    if (err == DeserializationError::NoMemory) sendError("JSON parse error: NoMemory");
+    else sendError("JSON parse error");
     return;
   }
 
@@ -415,13 +482,30 @@ void processJsonCommand(const String &line) {
     bool bench = doc.containsKey("bench") ? doc["bench"].as<bool>() : false;
     handleStart(crc32, total, pacing, bench);
   } else if (strcmp(cmd, "data") == 0) {
-    if (!doc.containsKey("batch") || !doc.containsKey("frames")) {
-      sendError("data requires batch and frames");
+    if (!doc.containsKey("batch")) {
+      sendError("data requires batch");
       return;
     }
+    uint32_t batch = doc["batch"].as<uint32_t>();
     uint32_t fromFrame = doc["from"] | 0;
-    JsonArray framesArr = doc["frames"].as<JsonArray>();
-    handleDataBatch(doc["batch"].as<uint32_t>(), fromFrame, framesArr);
+
+    if (doc.containsKey("b64")) {
+      const char *b64 = doc["b64"].as<const char *>();
+      if (!b64) {
+        sendError("b64 must be a string");
+        return;
+      }
+      handleDataBatchB64(batch, fromFrame, b64);
+    } else if (doc.containsKey("frames")) {
+      if (line.length() > 16384) {
+        sendError("JSON frames line too long — use b64");
+        return;
+      }
+      JsonArray framesArr = doc["frames"].as<JsonArray>();
+      handleDataBatch(batch, fromFrame, framesArr);
+    } else {
+      sendError("data requires b64 or frames");
+    }
   } else if (strcmp(cmd, "verify") == 0) {
     handleVerify();
   } else if (strcmp(cmd, "status") == 0) {
@@ -434,7 +518,7 @@ void processJsonCommand(const String &line) {
 }
 
 void setup() {
-  Serial.setRxBufferSize(65536);
+  Serial.setRxBufferSize(CDC_RX_LINE_MAX);
   Serial.begin(UART_BAUD);
   uint32_t t = millis();
   while (!Serial && millis() - t < 3000)
@@ -446,7 +530,7 @@ void setup() {
     while (1) delay(1000);
   }
 
-  Serial.println("{\"status\":\"boot\",\"version\":\"2.7-b1024\",\"can\":\"500kbps\"}");
+  Serial.println("{\"status\":\"boot\",\"version\":\"2.8-b64\",\"can\":\"500kbps\"}");
   Serial.flush();
 }
 

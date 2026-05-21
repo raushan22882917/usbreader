@@ -1,6 +1,7 @@
 import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Platform,
   Pressable,
@@ -46,15 +47,15 @@ const N_FRAMES         = FLASH_SIZE / DATA_PER_FRAME; // 32768
 const FRAMES_PER_BATCH = 1024;
 const N_BATCHES        = N_FRAMES / FRAMES_PER_BATCH; // 32
 
-// USB CDC: one newline-terminated JSON line per command (ESP32 rxBuffer 65536).
-// true = 1024 frames/line (~20 KB, needs JSON_RX_DOC_SIZE 131072 on ESP32 + PSRAM recommended).
-const OTA_FULL_BATCH_MODE = true;
-const FRAMES_PER_UART_MSG = OTA_FULL_BATCH_MODE ? FRAMES_PER_BATCH : 8;
-const UART_MSGS_PER_BATCH = FRAMES_PER_BATCH / FRAMES_PER_UART_MSG;
+// JSON arrays are ~18 KB for 1024 frames — ESP32 overflows; chunk to 64 frames/line in JSON mode.
+const JSON_FRAMES_PER_UART_MSG = 64;
 
 // CDC pacing (must match ESP32 start "pacing" field, microseconds between CAN frames)
 const CDC_CAN_PACING_US = 80;
-const CDC_RX_LINE_MAX = 65536;
+const CDC_RX_LINE_MAX_B64 = 20480;
+const CDC_RX_LINE_MAX_JSON = 18000;
+
+export type OtaDataFormat = "base64" | "json";
 
 // Timeouts (ms) — batch timeout scales with frame count (1024 frames ≈ 86s at 80µs pacing)
 const TIMEOUT_READY_MS = 30000;
@@ -110,7 +111,72 @@ function buildBatchFrames(
   return frames;
 }
 
+const B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function bytesToBase64(data: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < data.length; i += 3) {
+    const a = data[i];
+    const b = i + 1 < data.length ? data[i + 1] : 0;
+    const c = i + 2 < data.length ? data[i + 2] : 0;
+    out += B64_CHARS[a >> 2];
+    out += B64_CHARS[((a & 3) << 4) | (b >> 4)];
+    out += i + 1 < data.length ? B64_CHARS[((b & 15) << 2) | (c >> 6)] : "=";
+    out += i + 2 < data.length ? B64_CHARS[c & 63] : "=";
+  }
+  return out;
+}
+
+function buildBatchBytes(
+  fw: Uint8Array,
+  batchIdx: number,
+  fromFrame: number,
+  count: number,
+): Uint8Array {
+  const off = (batchIdx * FRAMES_PER_BATCH + fromFrame) * DATA_PER_FRAME;
+  const len = count * DATA_PER_FRAME;
+  return fw.subarray(off, off + len);
+}
+
+function buildDataCmd(
+  fw: Uint8Array,
+  batchIdx: number,
+  fromFrame: number,
+  count: number,
+  format: OtaDataFormat,
+): Record<string, unknown> {
+  const cmd: Record<string, unknown> = { cmd: "data", batch: batchIdx };
+  if (fromFrame > 0) cmd.from = fromFrame;
+
+  if (format === "base64") {
+    cmd.b64 = bytesToBase64(buildBatchBytes(fw, batchIdx, fromFrame, count));
+    return cmd;
+  }
+
+  cmd.frames = buildBatchFrames(fw, batchIdx, fromFrame, count);
+  return cmd;
+}
+
+function askOtaDataFormat(): Promise<OtaDataFormat | null> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      "Send batch data as",
+      `Base64 (~5.5 KB per line, recommended for ${FRAMES_PER_BATCH} frames).\n\n` +
+        `JSON frame arrays (~18 KB) exceed the ESP32 16 KB serial buffer and cause overflow.`,
+      [
+        { text: "Base64 (recommended)", onPress: () => resolve("base64") },
+        { text: "JSON frames (legacy)", onPress: () => resolve("json") },
+        { text: "Cancel", style: "cancel", onPress: () => resolve(null) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(null) },
+    );
+  });
+}
+
 function summarizeOtaJson(obj: Record<string, unknown>): string {
+  if (typeof obj.b64 === "string") {
+    return JSON.stringify({ ...obj, b64: `[${obj.b64.length} chars]` });
+  }
   const frames = obj.frames;
   if (Array.isArray(frames) && frames.length > 2) {
     return JSON.stringify({ ...obj, frames: `[${frames.length} frames]` });
@@ -374,7 +440,7 @@ const FLASH_STEPS = [
   "ESP32: SYNC + ANNOUNCE",
   "ESP32: DEVICE INFO",
   "ESP32: UNLOCK → Ready",
-  "DATA (32×1024, CDC)",
+  "DATA (32×1024, b64/json)",
   "VERIFY CRC32",
   "COMPLETE (Activated)",
 ];
@@ -486,8 +552,8 @@ export default function DecoderScreen() {
   //   start:  {"cmd":"start","crc32":N,"total":32768}
   // USB CDC protocol (one JSON line + \n per command/response):
   //   start:  {"cmd":"start","crc32":N,"total":32768,"pacing":500}
-  //   data:   {"cmd":"data","batch":B,"frames":[[d0,d1,d2,d3],...]}  // up to 1024
-  //   partial: {"cmd":"data","batch":B,"from":F,"frames":[...]}       // seq = B*1024+F
+  //   data:   {"cmd":"data","batch":B,"b64":"..."}  (preferred, 1024 frames)
+  //   data:   {"cmd":"data","batch":B,"frames":[[d0,d1,d2,d3],...]}  (legacy, chunked)
   //   verify: {"cmd":"verify"} | abort | status
   const log = (msg: string) =>
     setSendLog((prev) => [...prev.slice(-49), msg]);
@@ -516,6 +582,15 @@ export default function DecoderScreen() {
       return;
     }
 
+    const otaFormat = await askOtaDataFormat();
+    if (!otaFormat) return;
+
+    const framesPerUartMsg =
+      otaFormat === "base64" ? FRAMES_PER_BATCH : JSON_FRAMES_PER_UART_MSG;
+    const uartMsgsPerBatch = FRAMES_PER_BATCH / framesPerUartMsg;
+    const cdcLineMax =
+      otaFormat === "base64" ? CDC_RX_LINE_MAX_B64 : CDC_RX_LINE_MAX_JSON;
+
     abortRef.current = false;
     setIsSending(true);
     setSendDone(null);
@@ -538,8 +613,10 @@ export default function DecoderScreen() {
         throw new Error("USB disconnected during OTA");
       }
       const line = JSON.stringify(obj) + "\n";
-      if (line.length > CDC_RX_LINE_MAX) {
-        throw new Error(`CDC line too long (${line.length} B > ${CDC_RX_LINE_MAX})`);
+      if (line.length > cdcLineMax) {
+        throw new Error(
+          `CDC line too long (${line.length} B > ${cdcLineMax}). Use Base64 format.`,
+        );
       }
       if (!quiet) log(`→ ${summarizeOtaJson(obj)} (${line.length} B)`);
       const hex = strToHex(line);
@@ -590,7 +667,7 @@ export default function DecoderScreen() {
         }
         nl = sessionRxText.indexOf("\n");
       }
-      if (sessionRxText.length > CDC_RX_LINE_MAX) sessionRxText = "";
+      if (sessionRxText.length > cdcLineMax) sessionRxText = "";
     };
 
     const onSessionCdcHex = (hexData: string) => {
@@ -720,13 +797,12 @@ export default function DecoderScreen() {
           await delay(200);
         }
 
-        for (let fi = resumeFrom; fi < FRAMES_PER_BATCH; fi += FRAMES_PER_UART_MSG) {
+        for (let fi = resumeFrom; fi < FRAMES_PER_BATCH; fi += framesPerUartMsg) {
           if (abortRef.current) throw new Error("Aborted");
 
           const globalSeq = batchIdx * FRAMES_PER_BATCH + fi;
-          const count = Math.min(FRAMES_PER_UART_MSG, FRAMES_PER_BATCH - fi);
-          const frames = buildBatchFrames(fw, batchIdx, fi, count);
-          const pf = frames[0];
+          const count = Math.min(framesPerUartMsg, FRAMES_PER_BATCH - fi);
+          const pf = buildBatchFrames(fw, batchIdx, fi, 1)[0];
           const seqLo = (globalSeq & 0xFF).toString(16).padStart(2, "0").toUpperCase();
 
           const quietBatch =
@@ -736,17 +812,16 @@ export default function DecoderScreen() {
             batchIdx !== 0 &&
             batchIdx !== N_BATCHES - 1;
 
-          const lineNum = Math.floor(fi / FRAMES_PER_UART_MSG) + 1;
-          if (!quietBatch && (fi === resumeFrom || lineNum === 1 || fi + FRAMES_PER_UART_MSG >= FRAMES_PER_BATCH)) {
+          const lineNum = Math.floor(fi / framesPerUartMsg) + 1;
+          if (!quietBatch && (fi === resumeFrom || lineNum === 1 || fi + framesPerUartMsg >= FRAMES_PER_BATCH)) {
             log(
-              `→ batch=${batchIdx} from=${fi} msg ${lineNum}/${UART_MSGS_PER_BATCH} ` +
-              `(frames ${fi + 1}-${fi + frames.length}/${FRAMES_PER_BATCH}) ` +
+              `→ batch=${batchIdx} from=${fi} ${otaFormat} msg ${lineNum}/${uartMsgsPerBatch} ` +
+              `(frames ${fi + 1}-${fi + count}/${FRAMES_PER_BATCH}) ` +
               `| CAN: A1 ${seqLo} E2 04 ${pf.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}`,
             );
           }
 
-          const dataCmd: Record<string, unknown> = { cmd: "data", batch: batchIdx, frames };
-          if (fi > 0) dataCmd.from = fi;
+          const dataCmd = buildDataCmd(fw, batchIdx, fi, count, otaFormat);
 
           let resp: Record<string, unknown>;
           try {
@@ -755,7 +830,7 @@ export default function DecoderScreen() {
             const msg = e instanceof Error ? e.message : String(e);
             log(`   ✗ batch=${batchIdx} from=${fi}: ${msg}`);
             if (fi === 0 && batchRetries === 0) {
-              log(`   ⚠ Flash ESP32 firmware ESP32_BmsFlashBridge_fixed.ino (boot: version 2.2-cdc)`);
+              log(`   ⚠ Flash ESP32 firmware (boot: version 2.8-b64). Use Base64 for 1024-frame batches.`);
             }
             resumeFrom = fi;
             batchRetries++;
@@ -764,10 +839,10 @@ export default function DecoderScreen() {
 
           if (resp.status === "ok") {
             const progress = (resp.progress as number) ?? ((globalSeq + frames.length) / N_FRAMES) * 100;
-            const batchDone = fi + frames.length >= FRAMES_PER_BATCH;
+            const batchDone = fi + count >= FRAMES_PER_BATCH;
             setSendProgress(
               (batchIdx / N_BATCHES) * 88 +
-              ((fi + frames.length) / FRAMES_PER_BATCH) * (88 / N_BATCHES),
+              ((fi + count) / FRAMES_PER_BATCH) * (88 / N_BATCHES),
             );
             if (batchDone) {
               const next = (resp.next as number) ?? (batchIdx + 1) * FRAMES_PER_BATCH;
@@ -830,9 +905,10 @@ export default function DecoderScreen() {
         }
         // Phase 2 — Stream all batches
         setSendStep(5);
+        log(`>> [2/4] DATA — encoding=${otaFormat.toUpperCase()}`);
         log(
-          `>> [2/4] DATA — ${N_BATCHES} batches × ${FRAMES_PER_BATCH} frames ` +
-          `(${FRAMES_PER_UART_MSG} frames/CDC line, CAN: A1 xx E2 04)`,
+          `   ${N_BATCHES} batches × ${FRAMES_PER_BATCH} frames ` +
+          `(${framesPerUartMsg} frames/CDC line, CAN: A1 xx E2 04)`,
         );
 
         let dataOk = true;
@@ -991,7 +1067,7 @@ export default function DecoderScreen() {
                 <StatItem label="ORIGINAL SIZE"  value={fileInfo.origSize.toLocaleString() + " B"}              color={C.blue} />
                 <StatItem label="FLASH SIZE"      value={fileInfo.size.toLocaleString() + " B (128 KB)"}          color={C.blue} />
                 <StatItem label="CRC32"           value={"0x" + fileInfo.crc32.toString(16).toUpperCase().padStart(8,"0")} color={C.green} />
-                <StatItem label="FRAMES (4 B ea)" value={`${N_FRAMES.toLocaleString()} · ${FRAMES_PER_UART_MSG} frames/UART · ${UART_MSGS_PER_BATCH} msg/batch`} color={C.yellow} />
+                <StatItem label="FRAMES (4 B ea)" value={`${N_FRAMES.toLocaleString()} · up to ${FRAMES_PER_BATCH}/batch (b64)`} color={C.yellow} />
                 <StatItem label="UNIQUE BYTES"    value={byteFreq.unique.toString()}                              color={C.yellow} />
                 <StatItem label="NULL (0x00)"     value={byteFreq.zeros.toLocaleString()}                         color={C.muted} />
                 <StatItem label="FILL (0xFF)"     value={byteFreq.ffCount.toLocaleString()}                       color={C.muted} />

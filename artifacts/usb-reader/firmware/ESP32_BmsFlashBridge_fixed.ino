@@ -39,7 +39,20 @@
 #define CRC_TIMEOUT_MS 10000
 
 #define BATCH_SIZE 1024
-#define DATA_PER_FRAME 4
+#define DATA_PER_FRAME 4  // bytes 5–8 of each CAN DATA frame (4 B firmware / sequence)
+
+// ── CAN DATA frame (8 bytes on bus) ─────────────────────────────────────────
+//   Byte 1: A1       — flash DATA command
+//   Byte 2: seq      — sequence (global frame index & 0xFF; wraps 00..FF)
+//   Byte 3: E2       — fixed
+//   Byte 4: 04       — fixed
+//   Bytes 5–8: d0–d3 — firmware hex from file offset (seq * 4)
+// Example seq 0: A1 00 E2 04 D0 F9 00 20
+// Example seq 1: A1 01 E2 04 A5 EA 01 00
+// WRONG (old bug): A1 E8 7F 04 — byte 3 must NOT be (seq >> 8)
+
+#define CAN_DATA_BYTE3 0xE2
+#define CAN_DATA_BYTE4 0x04
 
 enum State {
   STATE_IDLE,
@@ -172,11 +185,20 @@ void sendReady() {
   sendJsonResponse(doc);
 }
 
-void sendBatchOk(uint32_t batch, uint32_t next, float progress) {
+void sendDiagnosisReady() {
+  StaticJsonDocument<JSON_TX_DOC_SIZE> doc;
+  doc["status"] = "diagnosis";
+  doc["msg"] = "listening";
+  sendJsonResponse(doc);
+}
+
+void sendBatchOk(uint32_t batch, uint32_t seqStart, uint32_t seqEnd, float progress) {
   StaticJsonDocument<JSON_TX_DOC_SIZE> doc;
   doc["status"] = "ok";
   doc["batch"] = batch;
-  doc["next"] = next;
+  doc["seq_start"] = seqStart;
+  doc["seq_end"] = seqEnd;
+  doc["next"] = seqEnd;
   doc["progress"] = ((int)(progress * 10.0f + 0.5f)) / 10.0f;
   sendJsonResponse(doc);
 }
@@ -246,19 +268,26 @@ bool doHandshake() {
   return true;
 }
 
-// CAN DATA: [A1 seq_lo 0xE2 0x04 d0 d1 d2 d3]
+// Build 8-byte CAN DATA: A1 | seq_lo | E2 | 04 | d0 d1 d2 d3
+static void buildCanDataFrame(uint32_t seq, const uint8_t *payload, uint8_t out[8]) {
+  out[0] = CMD_DATA;
+  out[1] = (uint8_t)(seq & 0xFF);
+  out[2] = CAN_DATA_BYTE3;  // always 0xE2 — never (seq >> 8)
+  out[3] = CAN_DATA_BYTE4;
+  out[4] = payload[0];
+  out[5] = payload[1];
+  out[6] = payload[2];
+  out[7] = payload[3];
+}
+
 int sendBatchToCan(uint32_t startSeq, const uint8_t frames[][DATA_PER_FRAME],
                    uint16_t count) {
   for (uint16_t i = 0; i < count; i++) {
-    uint32_t seq = startSeq + i;
+    const uint32_t seq = startSeq + i;
+    const uint8_t *d = frames[i];
 
-    uint8_t canFrame[8] = {
-      CMD_DATA,
-      (uint8_t)(seq & 0xFF),
-      0xE2,
-      0x04,
-      frames[i][0], frames[i][1], frames[i][2], frames[i][3]
-    };
+    uint8_t canFrame[8];
+    buildCanDataFrame(seq, d, canFrame);
 
     if (!canTx(ID_BUS, canFrame, 8)) return (int)i;
 
@@ -281,6 +310,18 @@ void handleStart(uint32_t crc32, uint32_t total, uint32_t pacing, bool bench) {
 
   currentState = STATE_READY;
   sendReady();
+}
+
+// CAN handshake then listen for BMS telemetry (app sends {"cmd":"diagnosis"} only).
+void handleDiagnosis() {
+  benchMode = false;
+  framesSent = 0;
+  currentState = STATE_HANDSHAKE;
+
+  if (!doHandshake()) return;
+
+  currentState = STATE_READY;
+  sendDiagnosisReady();
 }
 
 static const int8_t b64Lut[128] = {
@@ -319,15 +360,14 @@ int b64Decode(const char *input, uint8_t *output, size_t maxOut) {
   return (int)outLen;
 }
 
-void finishDataBatch(uint32_t batchIndex, uint32_t fromFrame, uint16_t count) {
-  uint32_t startSeq = batchIndex * BATCH_SIZE + fromFrame;
+void finishDataBatch(uint32_t batchIndex, uint32_t startSeq, uint16_t count) {
   float progress = totalFrames > 0 ? (framesSent * 100.0f) / totalFrames : 0.0f;
-  uint32_t next = startSeq + count;
-  sendBatchOk(batchIndex, next, progress);
+  uint32_t seqEnd = startSeq + count;
+  sendBatchOk(batchIndex, startSeq, seqEnd, progress);
   currentState = STATE_READY;
 }
 
-void handleDataBatch(uint32_t batchIndex, uint32_t fromFrame, JsonArray &framesArr) {
+void handleDataBatch(uint32_t batchIndex, uint32_t startSeq, JsonArray &framesArr) {
   if (currentState != STATE_READY && currentState != STATE_DATA) {
     sendError("Not ready for data");
     return;
@@ -340,8 +380,9 @@ void handleDataBatch(uint32_t batchIndex, uint32_t fromFrame, JsonArray &framesA
     return;
   }
   uint16_t count = (uint16_t)frameCount;
+  uint32_t fromFrame = startSeq - (batchIndex * BATCH_SIZE);
   if (fromFrame + count > BATCH_SIZE) {
-    sendError("from + frames exceeds batch size");
+    sendError("start_seq out of range for batch");
     return;
   }
 
@@ -356,17 +397,17 @@ void handleDataBatch(uint32_t batchIndex, uint32_t fromFrame, JsonArray &framesA
       frames[i][j] = row[j];
   }
 
-  uint32_t startSeq = batchIndex * BATCH_SIZE + fromFrame;
   int failAt = sendBatchToCan(startSeq, frames, count);
   if (failAt >= 0) {
     sendRetry(batchIndex, fromFrame + (uint32_t)failAt);
     return;
   }
 
-  finishDataBatch(batchIndex, fromFrame, count);
+  finishDataBatch(batchIndex, startSeq, count);
 }
 
-void handleDataBatchB64(uint32_t batchIndex, uint32_t fromFrame, const char *b64Str) {
+void handleDataBatchB64(uint32_t batchIndex, uint32_t startSeq, const char *b64Str,
+                      uint16_t expectedCount) {
   if (currentState != STATE_READY && currentState != STATE_DATA) {
     sendError("Not ready for data");
     return;
@@ -385,19 +426,28 @@ void handleDataBatchB64(uint32_t batchIndex, uint32_t fromFrame, const char *b64
   }
 
   uint16_t count = (uint16_t)(decoded / DATA_PER_FRAME);
-  if (count == 0 || count > BATCH_SIZE || fromFrame + count > BATCH_SIZE) {
+  if (count == 0 || count > BATCH_SIZE) {
     sendError("Invalid b64 batch size");
     return;
   }
+  if (expectedCount > 0 && expectedCount != count) {
+    sendError("count does not match b64 payload");
+    return;
+  }
+  uint32_t fromFrame = startSeq - (batchIndex * BATCH_SIZE);
+  if (fromFrame + count > BATCH_SIZE) {
+    sendError("start_seq out of range for batch");
+    return;
+  }
 
-  uint32_t startSeq = batchIndex * BATCH_SIZE + fromFrame;
   int failAt = sendBatchToCan(startSeq, (const uint8_t(*)[DATA_PER_FRAME])rawBuf, count);
   if (failAt >= 0) {
+    uint32_t fromFrame = startSeq - (batchIndex * BATCH_SIZE);
     sendRetry(batchIndex, fromFrame + (uint32_t)failAt);
     return;
   }
 
-  finishDataBatch(batchIndex, fromFrame, count);
+  finishDataBatch(batchIndex, startSeq, count);
 }
 
 void handleVerify() {
@@ -481,13 +531,18 @@ void processJsonCommand(const String &line) {
     uint32_t pacing = doc.containsKey("pacing") ? doc["pacing"].as<uint32_t>() : 500;
     bool bench = doc.containsKey("bench") ? doc["bench"].as<bool>() : false;
     handleStart(crc32, total, pacing, bench);
+  } else if (strcmp(cmd, "diagnosis") == 0) {
+    handleDiagnosis();
   } else if (strcmp(cmd, "data") == 0) {
     if (!doc.containsKey("batch")) {
       sendError("data requires batch");
       return;
     }
     uint32_t batch = doc["batch"].as<uint32_t>();
-    uint32_t fromFrame = doc["from"] | 0;
+    uint32_t fromFrame = doc.containsKey("from") ? doc["from"].as<uint32_t>() : 0;
+    uint32_t startSeq = doc.containsKey("start_seq")
+                            ? doc["start_seq"].as<uint32_t>()
+                            : (batch * BATCH_SIZE + fromFrame);
 
     if (doc.containsKey("b64")) {
       const char *b64 = doc["b64"].as<const char *>();
@@ -495,14 +550,15 @@ void processJsonCommand(const String &line) {
         sendError("b64 must be a string");
         return;
       }
-      handleDataBatchB64(batch, fromFrame, b64);
+      uint16_t expectedCount = doc.containsKey("count") ? doc["count"].as<uint16_t>() : 0;
+      handleDataBatchB64(batch, startSeq, b64, expectedCount);
     } else if (doc.containsKey("frames")) {
       if (line.length() > 16384) {
         sendError("JSON frames line too long — use b64");
         return;
       }
       JsonArray framesArr = doc["frames"].as<JsonArray>();
-      handleDataBatch(batch, fromFrame, framesArr);
+      handleDataBatch(batch, startSeq, framesArr);
     } else {
       sendError("data requires b64 or frames");
     }
@@ -530,7 +586,9 @@ void setup() {
     while (1) delay(1000);
   }
 
-  Serial.println("{\"status\":\"boot\",\"version\":\"2.8-b64\",\"can\":\"500kbps\"}");
+  Serial.println(
+      "{\"status\":\"boot\",\"version\":\"3.2-diagnosis\",\"can\":\"500kbps\","
+      "\"can_data\":\"A1,seq,E2,04\"}");
   Serial.flush();
 }
 

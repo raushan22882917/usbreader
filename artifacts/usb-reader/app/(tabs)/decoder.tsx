@@ -41,7 +41,8 @@ const C = {
 
 // ── Flash / OTA constants ─────────────────────────────────────
 const FLASH_SIZE       = 131072;    // 128 KB
-const DATA_PER_FRAME   = 4;         // 4 B firmware payload per CAN seq (8 B CAN frame total)
+// CAN DATA frame (8 B): [1]=A1 [2]=seq [3]=E2 [4]=04 [5–8]=firmware bytes (4 B / sequence)
+const DATA_PER_FRAME   = 4;
 const N_FRAMES         = FLASH_SIZE / DATA_PER_FRAME; // 32768
 // Matches ESP32 BATCH_SIZE: 128 KB / 4 B = 32768 frames, 32 batches × 1024 frames.
 const FRAMES_PER_BATCH = 1024;
@@ -96,17 +97,27 @@ function strToHex(str: string): string {
 }
 
 /** Build [[d0,d1,d2,d3],...] for one UART data command (full or partial batch on retry). */
+/** Preview CAN line: byte1=A1 byte2=seq byte3=E2 byte4=04 bytes5-8=hex payload. */
+function formatCanDataFrame(globalSeq: number, payload: number[]): string {
+  const seq = (globalSeq & 0xff).toString(16).padStart(2, "0").toUpperCase();
+  const hex = payload.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(" ");
+  return `A1 ${seq} E2 04 ${hex}`;
+}
+
+function framePayloadAt(fw: Uint8Array, globalSeq: number): number[] {
+  const off = globalSeq * DATA_PER_FRAME;
+  return [fw[off], fw[off + 1], fw[off + 2], fw[off + 3]];
+}
+
 function buildBatchFrames(
   fw: Uint8Array,
   batchIdx: number,
   fromFrame: number,
   count: number,
 ): number[][] {
-  const baseSeq = batchIdx * FRAMES_PER_BATCH;
   const frames: number[][] = [];
   for (let i = 0; i < count; i++) {
-    const off = (baseSeq + fromFrame + i) * DATA_PER_FRAME;
-    frames.push([fw[off], fw[off + 1], fw[off + 2], fw[off + 3]]);
+    frames.push(framePayloadAt(fw, batchIdx * FRAMES_PER_BATCH + fromFrame + i));
   }
   return frames;
 }
@@ -145,7 +156,13 @@ function buildDataCmd(
   count: number,
   format: OtaDataFormat,
 ): Record<string, unknown> {
-  const cmd: Record<string, unknown> = { cmd: "data", batch: batchIdx };
+  const startSeq = batchIdx * FRAMES_PER_BATCH + fromFrame;
+  const cmd: Record<string, unknown> = {
+    cmd: "data",
+    batch: batchIdx,
+    start_seq: startSeq,
+    count,
+  };
   if (fromFrame > 0) cmd.from = fromFrame;
 
   if (format === "base64") {
@@ -175,7 +192,14 @@ function askOtaDataFormat(): Promise<OtaDataFormat | null> {
 
 function summarizeOtaJson(obj: Record<string, unknown>): string {
   if (typeof obj.b64 === "string") {
-    return JSON.stringify({ ...obj, b64: `[${obj.b64.length} chars]` });
+    return JSON.stringify({
+      ...obj,
+      b64: `[${obj.b64.length} chars]`,
+    });
+  }
+  if (typeof obj.start_seq === "number") {
+    const c = obj.count ?? "?";
+    return JSON.stringify({ cmd: obj.cmd, batch: obj.batch, start_seq: obj.start_seq, count: c, frames: obj.frames ? "[…]" : undefined });
   }
   const frames = obj.frames;
   if (Array.isArray(frames) && frames.length > 2) {
@@ -781,7 +805,7 @@ export default function DecoderScreen() {
 
     // ── Phase 2: DATA — Python-style CAN via JSON bridge ─────────────────────
     // {"cmd":"data","batch":B,"from":F,"frames":[[d0,d1,d2,d3],...]}
-    // ESP32: seq=B*1024+F → CAN [A1 seq_lo E2 04 d0 d1 d2 d3]  (byte 2 must be 0xE2)
+    // ESP32 builds: A1 | sequence | E2 | 04 | d0 d1 d2 d3 (bytes 5–8 from BIN offset seq*4)
     const sendBatch = async (
       batchIdx: number,
       fromFrame = 0,
@@ -802,8 +826,8 @@ export default function DecoderScreen() {
 
           const globalSeq = batchIdx * FRAMES_PER_BATCH + fi;
           const count = Math.min(framesPerUartMsg, FRAMES_PER_BATCH - fi);
-          const pf = buildBatchFrames(fw, batchIdx, fi, 1)[0];
-          const seqLo = (globalSeq & 0xFF).toString(16).padStart(2, "0").toUpperCase();
+          const firstPayload = framePayloadAt(fw, globalSeq);
+          const lastPayload = framePayloadAt(fw, globalSeq + count - 1);
 
           const quietBatch =
             batchRetries === 0 &&
@@ -816,9 +840,17 @@ export default function DecoderScreen() {
           if (!quietBatch && (fi === resumeFrom || lineNum === 1 || fi + framesPerUartMsg >= FRAMES_PER_BATCH)) {
             log(
               `→ batch=${batchIdx} from=${fi} ${otaFormat} msg ${lineNum}/${uartMsgsPerBatch} ` +
-              `(frames ${fi + 1}-${fi + count}/${FRAMES_PER_BATCH}) ` +
-              `| CAN: A1 ${seqLo} E2 04 ${pf.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}`,
+              `(seq ${globalSeq}-${globalSeq + count - 1}) ` +
+              formatCanDataFrame(globalSeq, firstPayload) +
+              (count > 1 ? ` … ${formatCanDataFrame(globalSeq + count - 1, lastPayload)}` : ""),
             );
+          }
+
+          if (batchIdx === 0 && fi === 0 && batchRetries === 0 && lineNum === 1) {
+            log(`   CAN: [1]=A1 [2]=seq [3]=E2 [4]=04 [5-8]=firmware hex (seq = global frame & 0xFF)`);
+            for (let s = 0; s < 3; s++) {
+              log(`   ${formatCanDataFrame(s, framePayloadAt(fw, s))}`);
+            }
           }
 
           const dataCmd = buildDataCmd(fw, batchIdx, fi, count, otaFormat);
@@ -830,7 +862,7 @@ export default function DecoderScreen() {
             const msg = e instanceof Error ? e.message : String(e);
             log(`   ✗ batch=${batchIdx} from=${fi}: ${msg}`);
             if (fi === 0 && batchRetries === 0) {
-              log(`   ⚠ Flash ESP32 firmware (boot: version 2.8-b64). Use Base64 for 1024-frame batches.`);
+              log(`   ⚠ Flash ESP32 firmware (boot: version 3.0-startseq). Use Base64.`);
             }
             resumeFrom = fi;
             batchRetries++;
@@ -838,7 +870,16 @@ export default function DecoderScreen() {
           }
 
           if (resp.status === "ok") {
-            const progress = (resp.progress as number) ?? ((globalSeq + frames.length) / N_FRAMES) * 100;
+            const progress = (resp.progress as number) ?? ((globalSeq + count) / N_FRAMES) * 100;
+            const seqStart = (resp.seq_start as number) ?? globalSeq;
+            const seqEnd = (resp.seq_end as number) ?? globalSeq + count;
+            const expectedEnd = globalSeq + count;
+            if (seqStart !== globalSeq || seqEnd !== expectedEnd) {
+              log(
+                `   ⚠ seq mismatch: sent ${globalSeq}-${expectedEnd - 1}, ` +
+                `ESP32 reported ${seqStart}-${seqEnd - 1}`,
+              );
+            }
             const batchDone = fi + count >= FRAMES_PER_BATCH;
             setSendProgress(
               (batchIdx / N_BATCHES) * 88 +
@@ -847,7 +888,10 @@ export default function DecoderScreen() {
             if (batchDone) {
               const next = (resp.next as number) ?? (batchIdx + 1) * FRAMES_PER_BATCH;
               if (!quietBatch || batchIdx % OTA_LOG_EVERY_N_BATCHES === 0 || batchIdx === N_BATCHES - 1) {
-                log(`   ✓ batch=${batchIdx} next=${next} progress=${progress.toFixed(1)}%`);
+                log(
+                  `   ✓ batch=${batchIdx} seq ${seqStart}-${seqEnd - 1} next=${next} ` +
+                  `progress=${progress.toFixed(1)}%`,
+                );
               }
               return { ok: true, failedFrame: -1 };
             }

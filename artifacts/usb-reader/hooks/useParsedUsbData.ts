@@ -1,5 +1,6 @@
 import { useMemo, useEffect, useState } from "react";
 import { DataPacket } from "@/context/UsbContext";
+import { extractJsonObjects } from "@/lib/diagnosisTelemetry";
 
 export interface ParsedUsbData {
   dataRateKbps: number;
@@ -93,7 +94,7 @@ export interface ParsedUsbData {
   lastPacketTime: string;
 }
 
-const DEFAULTS: ParsedUsbData = {
+export const PARSED_USB_DEFAULTS: ParsedUsbData = {
   dataRateKbps: 0, packetsPerSec: 0,
   totalRxBytes: 0, totalTxBytes: 0, totalBytes: 0,
   rxCount: 0, txCount: 0,
@@ -114,33 +115,6 @@ const DEFAULTS: ParsedUsbData = {
   uptimeSec: 0, heartbeat: 0, timestamp: 0,
   lastPacketData: "", lastPacketTime: "",
 };
-
-// ── Extract all complete JSON objects from a raw string ───────────────────────
-// Handles the case where JSON is split across multiple 512-byte USB packets.
-function extractJsonObjects(raw: string): any[] {
-  const results: any[] = [];
-  let depth = 0;
-  let start = -1;
-
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i];
-    if (ch === "{") {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (ch === "}") {
-      depth--;
-      if (depth === 0 && start !== -1) {
-        try {
-          results.push(JSON.parse(raw.slice(start, i + 1)));
-        } catch {
-          // partial / malformed — skip
-        }
-        start = -1;
-      }
-    }
-  }
-  return results;
-}
 
 // ── Apply one parsed JSON object to the result ────────────────────────────────
 function applyJson(r: ParsedUsbData, data: any): void {
@@ -238,8 +212,8 @@ function applyJson(r: ParsedUsbData, data: any): void {
 }
 
 // ── Main parser ───────────────────────────────────────────────────────────────
-function parsePackets(packets: DataPacket[]): ParsedUsbData {
-  const r = { ...DEFAULTS };
+export function parsePackets(packets: DataPacket[]): ParsedUsbData {
+  const r = { ...PARSED_USB_DEFAULTS };
   const rxPkts = packets.filter((p) => p.direction === "read");
   const txPkts = packets.filter((p) => p.direction === "write");
 
@@ -301,11 +275,23 @@ function parsePackets(packets: DataPacket[]): ParsedUsbData {
   return r;
 }
 
-export function useParsedUsbData(packets: DataPacket[]): ParsedUsbData {
+/** Build display state from one diagnosis telemetry JSON object. */
+export function parsedFromTelemetryJson(data: Record<string, unknown>): ParsedUsbData {
+  const r = { ...PARSED_USB_DEFAULTS };
+  applyJson(r, data);
+  return r;
+}
+
+export function useParsedUsbData(
+  packets: DataPacket[],
+  options?: { pollMs?: number },
+): ParsedUsbData {
+  const pollMs = options?.pollMs ?? 800;
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 800);
+    if (pollMs <= 0) return;
+    const id = setInterval(() => setTick((t) => t + 1), pollMs);
     return () => clearInterval(id);
-  }, []);
-  return useMemo(() => parsePackets(packets), [packets, tick]);
+  }, [pollMs]);
+  return useMemo(() => parsePackets(packets), [packets, tick, pollMs]);
 }

@@ -27,7 +27,7 @@ keytool -genkeypair \
   -validity $VALIDITY \
   -storepass Autonxt@2288 \
   -keypass Autonxt@2288 \
-  -dname "CN=USB Reader, OU=Mobile, O=FirstClassDelivary, L=Unknown, ST=Unknown, C=US"
+  -dname "CN=Autonxt USB Reader, OU=Mobile, O=Autonxt, L=Unknown, ST=Unknown, C=US"
 
 echo ""
 echo "✅ Keystore created at: $KEYSTORE"

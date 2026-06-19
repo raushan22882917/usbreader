@@ -1,6 +1,7 @@
 import { useMemo, useEffect, useState } from "react";
 import { DataPacket } from "@/context/UsbContext";
 import { extractJsonObjects } from "@/lib/diagnosisTelemetry";
+import { coerceBytesToDecimal, coerceNumArray } from "@/lib/diagnosisCanDecode";
 
 export interface ParsedUsbData {
   dataRateKbps: number;
@@ -64,6 +65,20 @@ export interface ParsedUsbData {
   dcdcHvilErr: boolean;
   dcdcOverTemp: boolean;
 
+  // DC-DC 2 (0x18F8622B / 0x10262B27)
+  dcdc2VoltV: number;
+  dcdc2CurrentA: number;
+  dcdc2TempC: number;
+  dcdc2WorkState: string;
+  dcdc2FaultLevel: string;
+  dcdc2SysState: string;
+  dcdc2ErrFlags: number;
+  dcdc2Version: number;
+  dcdc2CmdMode: string;
+  dcdc2CmdVset: number;
+  dcdc2CmdIset: number;
+  dcdc2CmdReset: string;
+
   // Charger
   chrgrStatus: string;
   chrgrVoltV: number;
@@ -108,6 +123,10 @@ export const PARSED_USB_DEFAULTS: ParsedUsbData = {
   motorRpm: 0, motorTempC: 0, motorLoadPct: 0, motorRuntime: 0,
   dcdcVoltV: 0, dcdcCurrentA: 0, dcdcTempC: 0,
   dcdcReady: false, dcdcWorking: false, dcdcHvilErr: false, dcdcOverTemp: false,
+  dcdc2VoltV: 0, dcdc2CurrentA: 0, dcdc2TempC: 0,
+  dcdc2WorkState: "—", dcdc2FaultLevel: "—", dcdc2SysState: "—",
+  dcdc2ErrFlags: 0, dcdc2Version: 0,
+  dcdc2CmdMode: "—", dcdc2CmdVset: 0, dcdc2CmdIset: 0, dcdc2CmdReset: "—",
   chrgrStatus: "—", chrgrVoltV: 0, chrgrCurrentA: 0, chrgrErrorCode: 0,
   evccLastMsgCode: "", evccLastCanId: "", evccDescription: "",
   faultUV: false, faultOV: false, faultOTC: false, faultUTC: false,
@@ -116,6 +135,10 @@ export const PARSED_USB_DEFAULTS: ParsedUsbData = {
   lastPacketData: "", lastPacketTime: "",
 };
 
+function pickNum(value: unknown, mode: Parameters<typeof coerceBytesToDecimal>[1]): number | null {
+  return coerceBytesToDecimal(value, mode);
+}
+
 // ── Apply one parsed JSON object to the result ────────────────────────────────
 function applyJson(r: ParsedUsbData, data: any): void {
   const bms     = data.bms;
@@ -123,15 +146,20 @@ function applyJson(r: ParsedUsbData, data: any): void {
   const hv      = data.hv;
   const relays  = data.relays;
   const dcdc    = data.dcdc;
+  const dcdc2   = data.dcdc2;
   const charger = data.charger;
   const motor   = data.motor;
   const evcc    = data.evcc;
 
   if (bms) {
-    if (bms.soc            != null) r.soc          = bms.soc;
-    if (bms.pack_voltage_v != null) r.packVoltageV = bms.pack_voltage_v;
-    if (bms.pack_current_a != null) r.packCurrentA = bms.pack_current_a;
-    if (bms.pack_temp_c    != null) r.packTempC    = bms.pack_temp_c;
+    const soc = pickNum(bms.soc, "u8");
+    if (soc != null) r.soc = soc;
+    const pv = pickNum(bms.pack_voltage_v, "u16be_div100");
+    if (pv != null) r.packVoltageV = pv;
+    const pc = pickNum(bms.pack_current_a, "s16be_div100");
+    if (pc != null) r.packCurrentA = pc;
+    const pt = pickNum(bms.pack_temp_c, "s16be_div10");
+    if (pt != null) r.packTempC = pt;
     if (bms.faults) {
       r.faultUV   = !!bms.faults.UV;
       r.faultOV   = !!bms.faults.OV;
@@ -145,23 +173,43 @@ function applyJson(r: ParsedUsbData, data: any): void {
   }
 
   if (cells) {
-    if (cells.min_v        != null) r.minV        = cells.min_v;
-    if (cells.max_v        != null) r.maxV        = cells.max_v;
-    if (cells.min_cell_id  != null) r.minCellId   = cells.min_cell_id;
-    if (cells.max_cell_id  != null) r.maxCellId   = cells.max_cell_id;
-    if (cells.total_cells  != null) r.totalCells  = cells.total_cells;
-    if (cells.cycle        != null) r.cycle       = cells.cycle;
-    if (Array.isArray(cells.voltages))     r.cellVoltages     = cells.voltages;
-    if (Array.isArray(cells.temperatures)) r.cellTemperatures = cells.temperatures;
+    const minV = pickNum(cells.min_v, "u16be_div1000");
+    if (minV != null) r.minV = minV;
+    const maxV = pickNum(cells.max_v, "u16be_div1000");
+    if (maxV != null) r.maxV = maxV;
+    const minId = pickNum(cells.min_cell_id, "raw");
+    if (minId != null) r.minCellId = minId;
+    const maxId = pickNum(cells.max_cell_id, "raw");
+    if (maxId != null) r.maxCellId = maxId;
+    const total = pickNum(cells.total_cells, "u8");
+    if (total != null) r.totalCells = total;
+    const cycle = pickNum(cells.cycle, "u8");
+    if (cycle != null) r.cycle = cycle;
+    if (Array.isArray(cells.voltages)) {
+      const decoded = coerceNumArray(cells.voltages, "u16be_div1000");
+      if (decoded.length) r.cellVoltages = decoded;
+      else r.cellVoltages = cells.voltages.filter((x: unknown) => typeof x === "number");
+    }
+    if (Array.isArray(cells.temperatures)) {
+      const decoded = coerceNumArray(cells.temperatures, "s16be_div10");
+      if (decoded.length) r.cellTemperatures = decoded;
+      else r.cellTemperatures = cells.temperatures.filter((x: unknown) => typeof x === "number");
+    }
   }
 
   if (hv) {
-    if (hv.bat_plus_v != null) r.batPlusV = hv.bat_plus_v;
-    if (hv.fc_v       != null) r.fcV      = hv.fc_v;
-    if (hv.dcdc_v     != null) r.dcdcHV   = hv.dcdc_v;
-    if (hv.dsg_v      != null) r.dsgV     = hv.dsg_v;
-    if (hv.sc_v       != null) r.scV      = hv.sc_v;
-    if (hv.pchg_v     != null) r.pchgV    = hv.pchg_v;
+    const bat = pickNum(hv.bat_plus_v, "u16be_div100");
+    if (bat != null) r.batPlusV = bat;
+    const fc = pickNum(hv.fc_v, "u16be_div100");
+    if (fc != null) r.fcV = fc;
+    const dcdcHv = pickNum(hv.dcdc_v, "u16be_div100");
+    if (dcdcHv != null) r.dcdcHV = dcdcHv;
+    const dsg = pickNum(hv.dsg_v, "u16be_div100");
+    if (dsg != null) r.dsgV = dsg;
+    const sc = pickNum(hv.sc_v, "u16be_div100");
+    if (sc != null) r.scV = sc;
+    const pchg = pickNum(hv.pchg_v, "u16be_div100");
+    if (pchg != null) r.pchgV = pchg;
   }
 
   if (relays) {
@@ -176,28 +224,62 @@ function applyJson(r: ParsedUsbData, data: any): void {
   }
 
   if (dcdc) {
-    if (dcdc.voltage_v != null) r.dcdcVoltV    = dcdc.voltage_v;
-    if (dcdc.current_a != null) r.dcdcCurrentA = dcdc.current_a;
-    if (dcdc.temp_c    != null) r.dcdcTempC    = dcdc.temp_c;
+    const dv = pickNum(dcdc.voltage_v, "u16be_div10");
+    if (dv != null) r.dcdcVoltV = dv;
+    const da = pickNum(dcdc.current_a, "u16be_div10");
+    if (da != null) r.dcdcCurrentA = da;
+    const dt = pickNum(dcdc.temp_c, "u8_minus40");
+    if (dt != null) r.dcdcTempC = dt;
     r.dcdcReady    = !!dcdc.ready;
     r.dcdcWorking  = !!dcdc.working;
     r.dcdcHvilErr  = !!dcdc.hvil_err;
     r.dcdcOverTemp = !!dcdc.over_temperature;
   }
 
+  if (dcdc2) {
+    const v2 = pickNum(dcdc2.voltage_v, "u16le_mul005");
+    if (v2 != null) r.dcdc2VoltV = v2;
+    const a2 = pickNum(dcdc2.current_a, "u16le_mul005");
+    if (a2 != null) r.dcdc2CurrentA = a2;
+    const t2 = pickNum(dcdc2.temp_c, "u8_minus40");
+    if (t2 != null) r.dcdc2TempC = t2;
+    if (dcdc2.work_state != null) r.dcdc2WorkState = String(dcdc2.work_state);
+    if (dcdc2.fault_level != null) r.dcdc2FaultLevel = String(dcdc2.fault_level);
+    if (dcdc2.sys_state != null) r.dcdc2SysState = String(dcdc2.sys_state);
+    const err = pickNum(dcdc2.err_flags, "u8");
+    if (err != null) r.dcdc2ErrFlags = err;
+    const ver = pickNum(dcdc2.version, "u8");
+    if (ver != null) r.dcdc2Version = ver;
+    const cmd = dcdc2.cmd;
+    if (cmd && typeof cmd === "object") {
+      if (cmd.mode != null) r.dcdc2CmdMode = String(cmd.mode);
+      const vset = pickNum(cmd.v_set, "u16le_div10");
+      if (vset != null) r.dcdc2CmdVset = vset;
+      const iset = pickNum(cmd.i_set, "u16le_div10");
+      if (iset != null) r.dcdc2CmdIset = iset;
+      if (cmd.reset != null) r.dcdc2CmdReset = String(cmd.reset);
+    }
+  }
+
   if (charger) {
-    if (charger.status    != null) r.chrgrStatus    = charger.status;
-    if (charger.voltage_v != null) r.chrgrVoltV     = charger.voltage_v;
-    if (charger.current_a != null) r.chrgrCurrentA  = charger.current_a;
-    if (charger.error_code!= null) r.chrgrErrorCode = charger.error_code;
+    if (charger.status != null) r.chrgrStatus = String(charger.status);
+    const cv = pickNum(charger.voltage_v, "u16be_div10");
+    if (cv != null) r.chrgrVoltV = cv;
+    const ca = pickNum(charger.current_a, "u16be_div10");
+    if (ca != null) r.chrgrCurrentA = ca;
+    const ce = pickNum(charger.error_code, "u8");
+    if (ce != null) r.chrgrErrorCode = ce;
   }
 
   if (motor) {
-    if (motor.rpm     != null) r.motorRpm     = motor.rpm;
-    if (motor.temp_c  != null) r.motorTempC   = motor.temp_c;
-    if (motor.load_pct!= null) r.motorLoadPct = motor.load_pct;
-    else if (motor.load != null) r.motorLoadPct = motor.load;
-    if (motor.runtime != null) r.motorRuntime = motor.runtime;
+    const rpm = pickNum(motor.rpm, "u16le");
+    if (rpm != null) r.motorRpm = rpm;
+    const mt = pickNum(motor.temp_c, "s16le_div10");
+    if (mt != null) r.motorTempC = mt;
+    const load = pickNum(motor.load_pct ?? motor.load, "raw");
+    if (load != null) r.motorLoadPct = load;
+    const rt = pickNum(motor.runtime, "u16le");
+    if (rt != null) r.motorRuntime = rt;
   }
 
   if (evcc) {

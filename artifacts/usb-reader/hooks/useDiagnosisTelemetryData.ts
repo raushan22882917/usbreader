@@ -39,6 +39,7 @@ export function useDiagnosisTelemetryData(isConnected: boolean) {
       lastTsRef.current = null;
       rxStreamRef.current = "";
       packetsRef.current = [];
+      setP(PARSED_USB_DEFAULTS);
       return;
     }
 
@@ -82,5 +83,12 @@ export function useDiagnosisTelemetryData(isConnected: boolean) {
     lastTsRef.current = null;
   }, []);
 
-  return { p, packetsRef, lastTs: lastTsRef.current, resetTs };
+  const resetTelemetry = useCallback(() => {
+    lastTsRef.current = null;
+    rxStreamRef.current = "";
+    packetsRef.current = [];
+    setP(PARSED_USB_DEFAULTS);
+  }, []);
+
+  return { p, packetsRef, lastTs: lastTsRef.current, resetTs, resetTelemetry };
 }

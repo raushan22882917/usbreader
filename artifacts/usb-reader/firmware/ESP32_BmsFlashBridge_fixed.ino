@@ -15,7 +15,11 @@
 #define JSON_RX_DOC_B64 12288
 #define JSON_RX_DOC_SMALL 8192
 #define JSON_TX_DOC_SIZE 256
+#define JSON_CSV_TX_SIZE 4096
 #define CDC_RX_LINE_MAX 20480
+
+#define CANLOG_RECORD_SIZE 18
+#define CSV_LOG_FLUSH_MS 100
 
 #define CAN_TX_PIN GPIO_NUM_21
 #define CAN_RX_PIN GPIO_NUM_20
@@ -71,6 +75,15 @@ uint32_t expectedCrc32 = 0;
 String errorMsg = "";
 uint32_t pacingUs = 500;
 bool benchMode = false;
+
+// CSV log mode — passive CAN sniff → base64 batches to app
+bool csvMode = false;
+uint32_t csvFrameIndex = 0;
+uint32_t csvSessionStartMs = 0;
+uint32_t csvBatchSeq = 0;
+uint8_t csvRecordBuf[256 * CANLOG_RECORD_SIZE];
+uint16_t csvRecordCount = 0;
+uint32_t csvLastFlushMs = 0;
 
 bool canInit() {
   return ESP32Can.begin(ESP32Can.convertSpeed(CAN_BITRATE_KBPS), CAN_TX_PIN,
@@ -190,6 +203,109 @@ void sendDiagnosisReady() {
   doc["status"] = "diagnosis";
   doc["msg"] = "listening";
   sendJsonResponse(doc);
+}
+
+void sendCsvLogAck() {
+  StaticJsonDocument<JSON_TX_DOC_SIZE> doc;
+  doc["status"] = "ok";
+  doc["mode"] = "csvlog";
+  doc["record_size"] = CANLOG_RECORD_SIZE;
+  doc["fmt"] = "b64bin";
+  sendJsonResponse(doc);
+}
+
+static void putU32LE(uint8_t *p, uint32_t v) {
+  p[0] = (uint8_t)(v & 0xFF);
+  p[1] = (uint8_t)((v >> 8) & 0xFF);
+  p[2] = (uint8_t)((v >> 16) & 0xFF);
+  p[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
+static const char b64Enc[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+int b64Encode(const uint8_t *input, size_t inLen, char *output, size_t maxOut) {
+  size_t outLen = 0;
+  for (size_t i = 0; i < inLen; i += 3) {
+    uint32_t n = ((uint32_t)input[i]) << 16;
+    if (i + 1 < inLen) n |= ((uint32_t)input[i + 1]) << 8;
+    if (i + 2 < inLen) n |= (uint32_t)input[i + 2];
+
+    if (outLen + 4 >= maxOut) return -1;
+    output[outLen++] = b64Enc[(n >> 18) & 63];
+    output[outLen++] = b64Enc[(n >> 12) & 63];
+    output[outLen++] = (i + 1 < inLen) ? b64Enc[(n >> 6) & 63] : '=';
+    output[outLen++] = (i + 2 < inLen) ? b64Enc[n & 63] : '=';
+  }
+  output[outLen] = '\0';
+  return (int)outLen;
+}
+
+// 18-byte csvlog record: time_ms, id, flags, dlc, data[8]
+void packCsvRecord(const CanFrame &frame, uint8_t *out) {
+  memset(out, 0, CANLOG_RECORD_SIZE);
+  putU32LE(out + 0, millis() - csvSessionStartMs);
+  putU32LE(out + 4, frame.identifier);
+  uint8_t dlc = frame.data_length_code > 8 ? 8 : frame.data_length_code;
+  uint8_t flags = 0;
+  if (frame.extd) flags |= 0x01;
+  if (frame.rtr) flags |= 0x02;
+  out[8] = flags;
+  out[9] = dlc;
+  memcpy(out + 10, frame.data, 8);
+  (void)csvFrameIndex;
+  csvFrameIndex++;
+}
+
+void flushCsvLogLine() {
+  if (csvRecordCount == 0) return;
+
+  size_t rawLen = (size_t)csvRecordCount * CANLOG_RECORD_SIZE;
+  static char b64[(256 * CANLOG_RECORD_SIZE / 3 + 1) * 4 + 8];
+  int encLen = b64Encode(csvRecordBuf, rawLen, b64, sizeof(b64));
+  if (encLen < 0) {
+    csvRecordCount = 0;
+    return;
+  }
+
+  DynamicJsonDocument doc(JSON_CSV_TX_SIZE);
+  doc["log"] = b64;
+
+  char txBuf[JSON_CSV_TX_SIZE];
+  size_t len = serializeJson(doc, txBuf, sizeof(txBuf));
+  if (len < sizeof(txBuf) - 1) {
+    txBuf[len++] = '\n';
+    Serial.write((const uint8_t *)txBuf, len);
+  } else {
+    serializeJson(doc, Serial);
+    Serial.println();
+  }
+  Serial.flush();
+  csvRecordCount = 0;
+  csvLastFlushMs = millis();
+}
+
+void pushCsvFrame(const CanFrame &frame) {
+  if (csvRecordCount >= 256) flushCsvLogLine();
+  uint8_t *rec = csvRecordBuf + (csvRecordCount * CANLOG_RECORD_SIZE);
+  packCsvRecord(frame, rec);
+  csvRecordCount++;
+}
+
+void pollCsvCan() {
+  if (!csvMode) return;
+
+  CanFrame frame;
+  uint8_t polled = 0;
+  while (polled < 64 && ESP32Can.readFrame(frame, 0)) {
+    pushCsvFrame(frame);
+    polled++;
+  }
+
+  uint32_t now = millis();
+  if (csvRecordCount > 0 && (now - csvLastFlushMs) >= CSV_LOG_FLUSH_MS) {
+    flushCsvLogLine();
+  }
 }
 
 void sendBatchOk(uint32_t batch, uint32_t seqStart, uint32_t seqEnd, float progress) {
@@ -314,6 +430,7 @@ void handleStart(uint32_t crc32, uint32_t total, uint32_t pacing, bool bench) {
 
 // CAN handshake then listen for BMS telemetry (app sends {"cmd":"diagnosis"} only).
 void handleDiagnosis() {
+  csvMode = false;
   benchMode = false;
   framesSent = 0;
   currentState = STATE_HANDSHAKE;
@@ -322,6 +439,20 @@ void handleDiagnosis() {
 
   currentState = STATE_READY;
   sendDiagnosisReady();
+}
+
+// Passive CAN log — app sends {"cmd":"csv"}; streams base64 frame batches.
+void handleCsv() {
+  csvMode = true;
+  benchMode = false;
+  csvFrameIndex = 0;
+  csvBatchSeq = 0;
+  csvRecordCount = 0;
+  csvSessionStartMs = millis();
+  csvLastFlushMs = millis();
+  currentState = STATE_IDLE;
+  canFlushRx();
+  sendCsvLogAck();
 }
 
 static const int8_t b64Lut[128] = {
@@ -484,6 +615,10 @@ void handleVerify() {
 }
 
 void handleAbort() {
+  if (csvMode) {
+    flushCsvLogLine();
+    csvMode = false;
+  }
   canStop();
   canInit();
   currentState = STATE_IDLE;
@@ -522,6 +657,7 @@ void processJsonCommand(const String &line) {
   }
 
   if (strcmp(cmd, "start") == 0) {
+    csvMode = false;
     if (!doc.containsKey("crc32") || !doc.containsKey("total")) {
       sendError("start requires crc32 and total");
       return;
@@ -532,7 +668,10 @@ void processJsonCommand(const String &line) {
     bool bench = doc.containsKey("bench") ? doc["bench"].as<bool>() : false;
     handleStart(crc32, total, pacing, bench);
   } else if (strcmp(cmd, "diagnosis") == 0) {
+    csvMode = false;
     handleDiagnosis();
+  } else if (strcmp(cmd, "csv") == 0) {
+    handleCsv();
   } else if (strcmp(cmd, "data") == 0) {
     if (!doc.containsKey("batch")) {
       sendError("data requires batch");
@@ -587,7 +726,7 @@ void setup() {
   }
 
   Serial.println(
-      "{\"status\":\"boot\",\"version\":\"3.2-diagnosis\",\"can\":\"500kbps\","
+      "{\"status\":\"boot\",\"version\":\"3.4-csvlog\",\"can\":\"500kbps\","
       "\"can_data\":\"A1,seq,E2,04\"}");
   Serial.flush();
 }
@@ -615,5 +754,7 @@ void loop() {
       }
     }
   }
+
+  pollCsvCan();
   delay(1);
 }

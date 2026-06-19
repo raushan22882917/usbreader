@@ -7,8 +7,6 @@
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
-  <!-- USB Host: no permission tag needed, declared via uses-feature -->
-  <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
@@ -29,17 +27,13 @@
         <action android:name="android.intent.action.VIEW"/>
         <category android:name="android.intent.category.DEFAULT"/>
         <category android:name="android.intent.category.BROWSABLE"/>
-        <data android:scheme="usb-reader"/>
+        <data android:scheme="autonxt"/>
       </intent-filter>
-      <!-- Launch app when a USB device is attached -->
-      <intent-filter>
-        <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"/>
+      <intent-filter data-generated="true">
+        <action android:name="android.intent.action.android.hardware.usb.action.USB_DEVICE_ATTACHED"/>
       </intent-filter>
-      <meta-data
-        android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
-        android:resource="@xml/device_filter"/>
-      <intent-filter>
-        <action android:name="android.hardware.usb.action.USB_DEVICE_DETACHED"/>
+      <intent-filter data-generated="true">
+        <action android:name="android.intent.action.android.hardware.usb.action.USB_DEVICE_DETACHED"/>
       </intent-filter>
     </activity>
   </application>

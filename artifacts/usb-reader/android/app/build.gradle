@@ -64,10 +64,9 @@ react {
 }
 
 /**
- * Enable R8 full-mode minification in release builds.
- * Override via: ./gradlew assembleRelease -Pandroid.enableMinifyInReleaseBuilds=true
+ * Set this to true in release builds to optimize the app using [R8](https://developer.android.com/topic/performance/app-optimization/enable-app-optimization).
  */
-def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBuilds') ?: true).toBoolean()
+def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBuilds') ?: false).toBoolean()
 
 /**
  * The preferred build flavor of JavaScriptCore (JSC)
@@ -88,13 +87,13 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.firstclassdelivary.usbreader'
+    namespace 'com.autonxt.usbreader'
     defaultConfig {
-        applicationId 'com.firstclassdelivary.usbreader'
+        applicationId 'com.autonxt.usbreader'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "1.0.1"
+        versionCode 1
+        versionName "1.0.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -105,30 +104,21 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
-        release {
-            // Release keystore — set via gradle.properties or environment variables.
-            // Generate once with: keytool -genkeypair -v -keystore release.keystore
-            //   -alias usbreader -keyalg RSA -keysize 2048 -validity 10000
-            storeFile     file(findProperty('RELEASE_STORE_FILE')     ?: 'release.keystore')
-            storePassword (findProperty('RELEASE_STORE_PASSWORD')     ?: System.getenv('RELEASE_STORE_PASSWORD') ?: 'android')
-            keyAlias      (findProperty('RELEASE_KEY_ALIAS')          ?: System.getenv('RELEASE_KEY_ALIAS')      ?: 'usbreader')
-            keyPassword   (findProperty('RELEASE_KEY_PASSWORD')       ?: System.getenv('RELEASE_KEY_PASSWORD')   ?: 'android')
-        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            signingConfig signingConfigs.release
-            def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'true'
+            // Caution! In production, you need to generate your own keystore file.
+            // see https://reactnative.dev/docs/signed-apk-android.
+            signingConfig signingConfigs.debug
+            def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
-            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
             def enablePngCrunchInRelease = findProperty('android.enablePngCrunchInReleaseBuilds') ?: 'true'
             crunchPngs enablePngCrunchInRelease.toBoolean()
-            // Strip debug symbols from native libs
-            ndk { debugSymbolLevel 'NONE' }
         }
     }
     packagingOptions {

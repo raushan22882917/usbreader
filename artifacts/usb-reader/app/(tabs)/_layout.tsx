@@ -11,7 +11,7 @@ export default function TabLayout() {
     >
       <Tabs.Screen name="index" />
       <Tabs.Screen name="monitor" />
-      <Tabs.Screen name="write" />
+      <Tabs.Screen name="csv_log" />
       <Tabs.Screen name="diagnostics" />
       <Tabs.Screen name="decoder" />
       <Tabs.Screen name="inventor" />

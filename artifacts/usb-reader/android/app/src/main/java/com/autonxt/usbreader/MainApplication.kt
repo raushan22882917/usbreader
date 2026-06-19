@@ -1,4 +1,4 @@
-package com.firstclassdelivary.usbreader
+package com.autonxt.usbreader
 
 import android.app.Application
 import android.content.res.Configuration
@@ -23,7 +23,8 @@ class MainApplication : Application(), ReactApplication {
       object : DefaultReactNativeHost(this) {
         override fun getPackages(): List<ReactPackage> =
             PackageList(this).packages.apply {
-              add(UsbSerialPackage())
+              // Packages that cannot be autolinked yet can be added manually here, for example:
+              // add(MyReactNativePackage())
             }
 
           override fun getJSMainModuleName(): String = ".expo/.virtual-metro-entry"

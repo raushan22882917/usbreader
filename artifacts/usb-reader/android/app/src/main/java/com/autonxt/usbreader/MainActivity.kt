@@ -1,4 +1,4 @@
-package com.firstclassdelivary.usbreader
+package com.autonxt.usbreader
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build

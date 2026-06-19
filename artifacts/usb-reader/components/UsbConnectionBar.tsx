@@ -18,6 +18,7 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useUsb } from '@/context/UsbContext';
+import { useDeviceScale } from '@/hooks/useDeviceScale';
 import { Colors, Typography, Spacing, Border } from '../theme';
 import { StatusChip } from './ui/StatusChip';
 
@@ -26,6 +27,7 @@ interface UsbConnectionBarProps {
   nodeId?: string;
   onNodeIdChange?: (v: string) => void;
   compact?: boolean;
+  trailing?: React.ReactNode;
 }
 
 export function UsbConnectionBar({
@@ -33,6 +35,7 @@ export function UsbConnectionBar({
   nodeId = '1',
   onNodeIdChange,
   compact = false,
+  trailing,
 }: UsbConnectionBarProps) {
   const {
     devices, selectedDevice, connectionStatus,
@@ -42,6 +45,10 @@ export function UsbConnectionBar({
 
   const isConnected = connectionStatus === 'connected';
   const isWorking   = isScanning || isConnecting;
+  const { icon } = useDeviceScale();
+  const iconSm = icon(13, 10);
+  const iconXs = icon(12, 9);
+  const iconBtnSize = icon(26, 22);
 
   const [localDeviceId, setLocalDeviceId] = useState<string | null>(
     selectedDevice?.id ?? null
@@ -70,7 +77,7 @@ export function UsbConnectionBar({
 
   // ── Compact ──────────────────────────────────────────────────
   if (compact) {
-    return (
+    const row = (
       <View style={s.compactRow}>
         <StatusChip
           label={isConnected ? (selectedDevice?.name ?? 'Connected') : connectionStatus === 'error' ? 'Error' : 'Offline'}
@@ -78,11 +85,13 @@ export function UsbConnectionBar({
           pulse={isConnected}
         />
 
-        <Pressable style={s.iconBtn} onPress={handleScan} disabled={isWorking}>
+        <Pressable style={[s.iconBtn, { width: iconBtnSize, height: iconBtnSize }]} onPress={handleScan} disabled={isWorking}>
           {isScanning
             ? <ActivityIndicator size="small" color={Colors.secondary} />
-            : <MaterialCommunityIcons name="magnify" size={13} color={Colors.secondary} />}
+            : <MaterialCommunityIcons name="magnify" size={iconSm} color={Colors.secondary} />}
         </Pressable>
+
+        {trailing ? <View style={s.compactSpacer} /> : null}
 
         <Pressable
           style={[
@@ -99,15 +108,68 @@ export function UsbConnectionBar({
             ? <ActivityIndicator size="small" color={isConnected ? Colors.primary : Colors.tertiary} />
             : <MaterialCommunityIcons
                 name={isConnected ? 'link-off' : 'link'}
-                size={13}
+                size={iconSm}
                 color={isConnected ? Colors.primary : Colors.tertiary}
               />}
           <Text style={[s.connectTxt, { color: isConnected ? Colors.primary : Colors.tertiary }]}>
             {isConnected ? 'Disconnect' : 'Connect'}
           </Text>
         </Pressable>
+
+        {trailing}
       </View>
     );
+
+    if (trailing) {
+      return (
+        <View style={s.compactBar}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={s.compactRow}
+          >
+            <StatusChip
+              label={isConnected ? (selectedDevice?.name ?? 'Connected') : connectionStatus === 'error' ? 'Error' : 'Offline'}
+              color={isConnected ? Colors.tertiary : Colors.primary}
+              pulse={isConnected}
+            />
+
+            <Pressable style={[s.iconBtn, { width: iconBtnSize, height: iconBtnSize }]} onPress={handleScan} disabled={isWorking}>
+              {isScanning
+                ? <ActivityIndicator size="small" color={Colors.secondary} />
+                : <MaterialCommunityIcons name="magnify" size={iconSm} color={Colors.secondary} />}
+            </Pressable>
+
+            <Pressable
+              style={[
+                s.connectBtn,
+                {
+                  backgroundColor: isConnected ? `${Colors.primary}18` : `${Colors.tertiary}18`,
+                  borderColor:     isConnected ? `${Colors.primary}55` : `${Colors.tertiary}55`,
+                },
+              ]}
+              onPress={handleConnect}
+              disabled={isWorking}
+            >
+              {isConnecting
+                ? <ActivityIndicator size="small" color={isConnected ? Colors.primary : Colors.tertiary} />
+                : <MaterialCommunityIcons
+                    name={isConnected ? 'link-off' : 'link'}
+                    size={iconSm}
+                    color={isConnected ? Colors.primary : Colors.tertiary}
+                  />}
+              <Text style={[s.connectTxt, { color: isConnected ? Colors.primary : Colors.tertiary }]}>
+                {isConnected ? 'Disconnect' : 'Connect'}
+              </Text>
+            </Pressable>
+
+            <View style={s.trailingDivider} />
+            {trailing}
+          </ScrollView>
+        </View>
+      );
+    }
+    return row;
   }
 
   // ── Full ─────────────────────────────────────────────────────
@@ -115,7 +177,7 @@ export function UsbConnectionBar({
     <View style={s.bar}>
       {/* Row 1: device chips + scan */}
       <View style={s.row}>
-        <MaterialCommunityIcons name="usb" size={13} color={Colors.onSurfaceVariant} />
+        <MaterialCommunityIcons name="usb" size={iconSm} color={Colors.onSurfaceVariant} />
         <Text style={s.lbl}>USB</Text>
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }}>
@@ -148,7 +210,7 @@ export function UsbConnectionBar({
         <Pressable style={s.scanBtn} onPress={handleScan} disabled={isWorking}>
           {isScanning
             ? <ActivityIndicator size="small" color={Colors.onSurface} />
-            : <MaterialCommunityIcons name="magnify" size={12} color={Colors.onSurface} />}
+            : <MaterialCommunityIcons name="magnify" size={iconXs} color={Colors.onSurface} />}
           <Text style={s.scanTxt}>{isScanning ? 'Scanning…' : 'Scan'}</Text>
         </Pressable>
       </View>
@@ -203,7 +265,7 @@ export function UsbConnectionBar({
             ? <ActivityIndicator size="small" color={isConnected ? Colors.primary : Colors.tertiary} />
             : <MaterialCommunityIcons
                 name={isConnected ? 'link-off' : 'link'}
-                size={13}
+                size={iconSm}
                 color={isConnected ? Colors.primary : Colors.tertiary}
               />}
           <Text style={[s.connectTxt, { color: isConnected ? Colors.primary : Colors.tertiary }]}>
@@ -330,10 +392,28 @@ const s = StyleSheet.create({
   },
 
   // Compact
+  compactBar: {
+    backgroundColor: Colors.surfaceContainerLow,
+    borderBottomWidth: Border.width,
+    borderBottomColor: Border.color,
+    paddingHorizontal: Spacing.panelPadding,
+    paddingVertical: Spacing.xs,
+  },
   compactRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xs,
+    flexWrap: 'nowrap',
+  },
+  compactSpacer: {
+    flex: 1,
+    minWidth: 4,
+  },
+  trailingDivider: {
+    width: 1,
+    height: 22,
+    backgroundColor: Border.color,
+    marginHorizontal: 2,
   },
   iconBtn: {
     width: 26,

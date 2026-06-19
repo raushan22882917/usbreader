@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "USB Reader & Writer",
-    "slug": "usb-reader",
+    "name": "Autonxt",
+    "slug": "autonxt-usb-reader",
     "version": "1.0.0",
     "orientation": "landscape",
     "icon": "./assets/images/icon.png",
-    "scheme": "usb-reader",
+    "scheme": "autonxt",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "splash": {
@@ -14,7 +14,8 @@
       "backgroundColor": "#060d1a"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.autonxt.usbreader"
     },
     "android": {
       "permissions": [
@@ -31,7 +32,7 @@
           "action": "android.hardware.usb.action.USB_DEVICE_DETACHED"
         }
       ],
-      "package": "com.firstclassdelivary.usbreader"
+      "package": "com.autonxt.usbreader"
     },
     "web": {
       "favicon": "./assets/images/icon.png"

@@ -8,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -18,6 +19,7 @@ import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
 import { useUsb } from "@/context/UsbContext";
 import { useParsedUsbData } from "@/hooks/useParsedUsbData";
+import { useDeviceScale } from "@/hooks/useDeviceScale";
 import { UsbConnectionBar } from "@/components/UsbConnectionBar";
 import USBSerialService from "@/USBSerialService";
 
@@ -362,7 +364,7 @@ function HexTable({ bytes, mode, searchQuery, jumpOffset }: {
 
       {totalRows > VISIBLE_ROWS && (
         <View style={ht.truncNote}>
-          <MaterialCommunityIcons name="information-outline" size={12} color={C.yellow} />
+          <TruncNoteIcon />
           <Text style={ht.truncTxt}>
             Showing first {VISIBLE_ROWS * BYTES_PER_ROW} bytes of {bytes.length} total
           </Text>
@@ -370,6 +372,11 @@ function HexTable({ bytes, mode, searchQuery, jumpOffset }: {
       )}
     </View>
   );
+}
+
+function TruncNoteIcon() {
+  const { icon } = useDeviceScale();
+  return <MaterialCommunityIcons name="information-outline" size={icon(12, 9)} color={C.yellow} />;
 }
 
 const ht = StyleSheet.create({
@@ -435,8 +442,10 @@ const si = StyleSheet.create({
 // ── Flash step row ────────────────────────────────────────────
 type StepState = "idle" | "active" | "done" | "error";
 function FlashStep({ index, label, state }: { index: number; label: string; state: StepState }) {
+  const { icon: iconScale } = useDeviceScale();
+  const iconSm = iconScale(13, 10);
   const col = state === "done" ? C.green : state === "active" ? C.yellow : state === "error" ? C.red : C.muted;
-  const icon =
+  const stepIcon =
     state === "done"   ? "check-circle"       :
     state === "active" ? "loading"             :
     state === "error"  ? "close-circle"        :
@@ -446,7 +455,7 @@ function FlashStep({ index, label, state }: { index: number; label: string; stat
       <View style={[fs.numBox, { borderColor: col + "55", backgroundColor: col + "18" }]}>
         <Text style={[fs.num, { color: col }]}>{index}</Text>
       </View>
-      <MaterialCommunityIcons name={icon as any} size={13} color={col} />
+      <MaterialCommunityIcons name={stepIcon as any} size={iconSm} color={col} />
       <Text style={[fs.lbl, { color: state === "idle" ? C.muted : col }]}>{label}</Text>
     </View>
   );
@@ -472,6 +481,17 @@ const FLASH_STEPS = [
 // ── Main ─────────────────────────────────────────────────────
 export default function DecoderScreen() {
   const insets = useSafeAreaInsets();
+  const { width: screenW, height: screenH } = useWindowDimensions();
+  const isCompact = screenW < 900;
+  const { icon, svg } = useDeviceScale();
+  const iconXs = icon(11, 9);
+  const iconSm = icon(13, 10);
+  const iconMd = icon(16, 12);
+  const iconLg = icon(18, 14);
+  const uploadHero = svg(isCompact ? 28 : 36, 22);
+  const isLandscape = screenW > screenH;
+  const useStackedLayout = isCompact && !isLandscape;
+
   const { writeData, connectionStatus, quickConnect, packets } = useUsb();
   const isConnected = connectionStatus === "connected";
   const parsed = useParsedUsbData(packets);
@@ -1049,19 +1069,36 @@ export default function DecoderScreen() {
     return "idle";
   };
 
+  const showSidebar = !isCompact || fileInfo !== null;
+  const isTightHeight = screenH < 420;
+
   return (
     <View style={[styles.root, { paddingLeft: leftPad, paddingRight: rightPad }]}>
       <Header />
-      {/* Shared USB connection bar */}
       <UsbConnectionBar compact />
 
-      <View style={styles.body}>
+      {isCompact && !isLandscape && (
+        <View style={styles.rotateBanner}>
+          <MaterialCommunityIcons name="phone-rotate-landscape" size={iconMd} color={C.blue} />
+          <Text style={styles.rotateBannerTxt}>
+            Rotate your phone horizontally for the best decoder view
+          </Text>
+        </View>
+      )}
+
+      <View style={[styles.body, useStackedLayout && styles.bodyStacked]}>
         {/* ── LEFT SIDEBAR ── */}
-        <View style={styles.sidebar}>
+        {showSidebar && (
+        <View style={[
+          styles.sidebar,
+          isCompact && isLandscape && styles.sidebarNarrow,
+          useStackedLayout && styles.sidebarStacked,
+          isTightHeight && styles.sidebarTight,
+        ]}>
           {/* Header */}
           <View style={styles.sideHead}>
             <View style={[styles.sideIcon, { backgroundColor: "rgba(255,200,50,0.18)" }]}>
-              <MaterialCommunityIcons name="file-document-outline" size={14} color={C.yellow} />
+              <MaterialCommunityIcons name="file-document-outline" size={iconSm} color={C.yellow} />
             </View>
             <View>
               <Text style={styles.sideTitle}>BIN Decoder</Text>
@@ -1078,7 +1115,7 @@ export default function DecoderScreen() {
             {loading
               ? <ActivityIndicator size="small" color={C.yellow} />
               : <>
-                <MaterialCommunityIcons name="upload" size={15} color={fileInfo ? C.green : C.yellow} />
+                <MaterialCommunityIcons name="upload" size={iconSm} color={fileInfo ? C.green : C.yellow} />
                 <Text style={[styles.pickBtnTxt, { color: fileInfo ? C.green : C.yellow }]}>
                   {fileInfo ? "Load New File" : "Open .bin / .h File"}
                 </Text>
@@ -1090,7 +1127,7 @@ export default function DecoderScreen() {
             <View style={styles.fileInfo}>
               <View style={styles.fileIconRow}>
                 <View style={[styles.fileIcon, { backgroundColor: "rgba(255,200,50,0.12)" }]}>
-                  <MaterialCommunityIcons name="file-outline" size={20} color={C.yellow} />
+                  <MaterialCommunityIcons name="file-outline" size={iconMd} color={C.yellow} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.fileName} numberOfLines={2}>{fileInfo.name}</Text>
@@ -1154,14 +1191,14 @@ export default function DecoderScreen() {
                     onPress={handleFlash}
                     disabled={isSending}
                   >
-                    <MaterialCommunityIcons name={isSending ? "loading" : "flash"} size={13} color={C.bg} />
+                    <MaterialCommunityIcons name={isSending ? "loading" : "flash"} size={iconSm} color={C.bg} />
                     <Text style={fl.btnFlashTxt}>
                       {isSending ? "OTA IN PROGRESS…" : isConnected ? "START OTA" : "CONNECT USB FIRST"}
                     </Text>
                   </Pressable>
                   {isSending && (
                     <Pressable style={[fl.btn, fl.btnAbort]} onPress={() => { abortRef.current = true; }}>
-                      <MaterialCommunityIcons name="stop" size={13} color={C.red} />
+                      <MaterialCommunityIcons name="stop" size={iconSm} color={C.red} />
                     </Pressable>
                   )}
                 </View>
@@ -1175,7 +1212,7 @@ export default function DecoderScreen() {
                       ))}
                     </View>
                     <Pressable style={fl.viewLogBtn} onPress={() => setLogModalVisible(true)}>
-                      <MaterialCommunityIcons name="text-box-outline" size={11} color={C.blue} />
+                      <MaterialCommunityIcons name="text-box-outline" size={iconXs} color={C.blue} />
                       <Text style={fl.viewLogTxt}>VIEW FULL OTA LOG ({sendLog.length} lines)</Text>
                     </Pressable>
                   </>
@@ -1192,7 +1229,7 @@ export default function DecoderScreen() {
                     <View style={fl.modalBox}>
                       {/* Modal header */}
                       <View style={fl.modalHead}>
-                        <MaterialCommunityIcons name="text-box-multiple-outline" size={16} color={C.green} />
+                        <MaterialCommunityIcons name="text-box-multiple-outline" size={iconMd} color={C.green} />
                         <Text style={fl.modalTitle}>OTA LOG</Text>
                         <Text style={fl.modalCount}>{sendLog.length} lines</Text>
                         <View style={{ flex: 1 }} />
@@ -1208,7 +1245,7 @@ export default function DecoderScreen() {
                           </Text>
                         </View>
                         <Pressable style={fl.modalClose} onPress={() => setLogModalVisible(false)}>
-                          <MaterialCommunityIcons name="close" size={18} color={C.muted} />
+                          <MaterialCommunityIcons name="close" size={iconLg} color={C.muted} />
                         </Pressable>
                       </View>
 
@@ -1269,16 +1306,46 @@ export default function DecoderScreen() {
           {/* Error */}
           {error && (
             <View style={styles.errorBox}>
-              <MaterialCommunityIcons name="alert-outline" size={12} color={C.red} />
+              <MaterialCommunityIcons name="alert-outline" size={iconXs} color={C.red} />
               <Text style={styles.errorTxt}>{error}</Text>
             </View>
           )}
         </View>
+        )}
 
         {/* ── MAIN: Hex viewer ── */}
         <View style={styles.main}>
           {/* Toolbar */}
-          <View style={styles.toolbar}>
+          <View style={[styles.toolbar, isCompact && styles.toolbarCompact]}>
+            {isCompact && isLandscape ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.modeRow}
+            >
+              {(["hex", "binary", "decimal", "ascii"] as ViewMode[]).map((m) => (
+                <Pressable
+                  key={m}
+                  style={[styles.modeBtn, { backgroundColor: mode === m ? "rgba(255,200,50,0.15)" : "rgba(35,39,41,1)", borderColor: mode === m ? "rgba(255,200,50,0.5)" : C.border }]}
+                  onPress={() => { Haptics.selectionAsync(); setMode(m); }}
+                >
+                  <Text style={[styles.modeTxt, { color: mode === m ? C.yellow : C.muted }]}>
+                    {m.toUpperCase()}
+                  </Text>
+                </Pressable>
+              ))}
+              {fileInfo && (
+                <Pressable
+                  style={[styles.modeBtn, { backgroundColor: isSending ? "rgba(255,200,50,0.12)" : "rgba(110,220,161,0.12)", borderColor: isSending ? "rgba(255,200,50,0.45)" : "rgba(110,220,161,0.45)" }]}
+                  onPress={handleFlash}
+                  disabled={isSending}
+                >
+                  <MaterialCommunityIcons name={isSending ? "loading" : "upload-network-outline"} size={iconXs} color={isSending ? C.yellow : C.green} />
+                  <Text style={[styles.modeTxt, { color: isSending ? C.yellow : C.green }]}>{isSending ? "SENDING…" : "SEND"}</Text>
+                </Pressable>
+              )}
+            </ScrollView>
+            ) : (
             <View style={styles.modeRow}>
               {(["hex", "binary", "decimal", "ascii"] as ViewMode[]).map((m) => (
                 <Pressable
@@ -1291,21 +1358,18 @@ export default function DecoderScreen() {
                   </Text>
                 </Pressable>
               ))}
-
-              {/* SEND button — starts full BMS flash protocol */}
               {fileInfo && (
                 <Pressable
                   style={[styles.modeBtn, { backgroundColor: isSending ? "rgba(255,200,50,0.12)" : "rgba(110,220,161,0.12)", borderColor: isSending ? "rgba(255,200,50,0.45)" : "rgba(110,220,161,0.45)" }]}
                   onPress={handleFlash}
                   disabled={isSending}
                 >
-                  <MaterialCommunityIcons name={isSending ? "loading" : "upload-network-outline"} size={11} color={isSending ? C.yellow : C.green} />
+                  <MaterialCommunityIcons name={isSending ? "loading" : "upload-network-outline"} size={iconXs} color={isSending ? C.yellow : C.green} />
                   <Text style={[styles.modeTxt, { color: isSending ? C.yellow : C.green }]}>{isSending ? "SENDING…" : "SEND"}</Text>
                 </Pressable>
               )}
             </View>
-
-
+            )}
           </View>
 
           {/* Content */}
@@ -1317,7 +1381,7 @@ export default function DecoderScreen() {
             >
               <View style={styles.hexFileHeader}>
                 <View style={styles.hexFileHeaderLeft}>
-                  <MaterialCommunityIcons name="file-outline" size={12} color={C.yellow} />
+                  <MaterialCommunityIcons name="file-outline" size={iconXs} color={C.yellow} />
                   <Text style={styles.hexFileHeaderName}>{fileInfo.name}</Text>
                 </View>
                 <Text style={styles.hexFileHeaderSize}>
@@ -1330,46 +1394,58 @@ export default function DecoderScreen() {
               </ScrollView>
             </ScrollView>
           ) : (
-            <View style={styles.emptyHex}>
-              <View style={styles.dropZone}>
-                <View style={styles.dropZoneInner}>
-                  <MaterialCommunityIcons name="cloud-upload-outline" size={36} color={C.muted} />
-                  <Text style={styles.dropTitle}>No File Loaded</Text>
-                  <Text style={styles.dropSub}>Open any binary file — .bin, .h, .hex, .fw, .img, .rom, .elf</Text>
+            <ScrollView
+              style={styles.emptyScroll}
+              contentContainerStyle={[
+                styles.emptyHex,
+                isCompact && styles.emptyHexCompact,
+                isTightHeight && styles.emptyHexTight,
+              ]}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={[styles.dropZone, isCompact && styles.dropZoneCompact]}>
+                <View style={[styles.dropZoneInner, isCompact && styles.dropZoneInnerCompact]}>
+                  <MaterialCommunityIcons name="cloud-upload-outline" size={uploadHero} color={C.muted} />
+                  <Text style={[styles.dropTitle, isCompact && styles.dropTitleCompact]}>No File Loaded</Text>
+                  <Text style={[styles.dropSub, isCompact && styles.dropSubCompact]}>
+                    Open any binary file — .bin, .h, .hex, .fw, .img, .rom, .elf
+                  </Text>
                   <Pressable style={styles.dropBtn} onPress={handlePick} disabled={loading}>
                     {loading
                       ? <ActivityIndicator size="small" color={C.yellow} />
                       : <>
-                        <MaterialCommunityIcons name="folder-open-outline" size={14} color={C.yellow} />
+                        <MaterialCommunityIcons name="folder-open-outline" size={iconSm} color={C.yellow} />
                         <Text style={styles.dropBtnTxt}>Open File</Text>
                       </>}
                   </Pressable>
                 </View>
               </View>
 
-              <View style={styles.featureGrid}>
+              {!isTightHeight && (
+              <View style={[styles.featureGrid, isCompact && styles.featureGridCompact]}>
                 {[
                   { icon: "code-braces" as const,       label: "Hex View",     desc: "16-byte rows with offset column",  color: C.blue   },
                   { icon: "text-recognition" as const,   label: "ASCII Decode", desc: "View printable characters inline",  color: C.green  },
                   { icon: "chip" as const,               label: "Binary Mode",  desc: "Bit-level binary representation",   color: C.yellow },
                   { icon: "flash" as const,              label: "OTA Update",   desc: "8-step CAN bootloader with retry & resume", color: C.orange },
                 ].map(({ icon, label, desc, color }) => (
-                  <View key={label} style={[styles.featureCard, { borderColor: `${color}30` }]}>
+                  <View key={label} style={[styles.featureCard, isCompact && styles.featureCardCompact, { borderColor: `${color}30` }]}>
                     <View style={[styles.featureIcon, { backgroundColor: `${color}15` }]}>
-                      <MaterialCommunityIcons name={icon} size={16} color={color} />
+                      <MaterialCommunityIcons name={icon} size={iconMd} color={color} />
                     </View>
                     <Text style={styles.featureLabel}>{label}</Text>
                     <Text style={styles.featureDesc}>{desc}</Text>
                   </View>
                 ))}
               </View>
-            </View>
+              )}
+            </ScrollView>
           )}
 
           {/* Live USB stream */}
-          <View style={styles.streamBox}>
+          <View style={[styles.streamBox, isCompact && styles.streamBoxCompact]}>
             <View style={styles.streamHead}>
-              <MaterialCommunityIcons name="broadcast" size={12} color={C.green} />
+              <MaterialCommunityIcons name="broadcast" size={iconXs} color={C.green} />
               <Text style={styles.streamTitle}>LIVE USB STREAM</Text>
               <Text style={styles.streamCount}>{packets.length} pkts · {fmtBytes(parsed.totalBytes)}</Text>
             </View>
@@ -1383,14 +1459,14 @@ export default function DecoderScreen() {
           </View>
 
           {/* Status strip */}
-          <View style={[styles.statusStrip, { paddingBottom: Math.max(8, insets.bottom) }]}>
+          <View style={[styles.statusStrip, isCompact && styles.statusStripCompact, { paddingBottom: Math.max(8, insets.bottom) }]}>
             <View style={[styles.statusDot, { backgroundColor: fileInfo ? (isSending ? C.yellow : C.green) : C.muted }]} />
-            <Text style={styles.statusTxt}>
+            <Text style={styles.statusTxt} numberOfLines={isCompact ? 1 : 2}>
               {fileInfo
                 ? `${fileInfo.name} · ${formatSize(fileInfo.size)} · Mode: ${mode.toUpperCase()} · CRC32: 0x${fileInfo.crc32.toString(16).toUpperCase().padStart(8,"0")}`
                 : "No file loaded"}
             </Text>
-            {fileInfo && (
+            {fileInfo && !isCompact && (
               <Text style={styles.statusRight}>
                 {Math.min(fileInfo.size, VISIBLE_ROWS * BYTES_PER_ROW)} / {fileInfo.size} B shown
               </Text>
@@ -1441,9 +1517,40 @@ const fl = StyleSheet.create({
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
-  body: { flex: 1, flexDirection: "row" },
+  body: { flex: 1, flexDirection: "row", minHeight: 0 },
+  bodyStacked: { flexDirection: "column" },
 
-  sidebar: { width: 220, backgroundColor: "rgba(18,22,24,1)", borderRightWidth: 1, borderRightColor: C.border, padding: 12, gap: 10 },
+  rotateBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginHorizontal: 10,
+    marginBottom: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "rgba(80,180,255,0.08)",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(80,180,255,0.25)",
+  },
+  rotateBannerTxt: {
+    flex: 1,
+    color: C.blue,
+    fontSize: 11,
+    fontWeight: "600",
+    lineHeight: 15,
+  },
+
+  sidebar: { width: 220, backgroundColor: "rgba(18,22,24,1)", borderRightWidth: 1, borderRightColor: C.border, padding: 12, gap: 10, minHeight: 0 },
+  sidebarNarrow: { width: 148, padding: 8, gap: 6 },
+  sidebarStacked: {
+    width: "100%",
+    maxHeight: 200,
+    borderRightWidth: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+  },
+  sidebarTight: { maxHeight: 110, padding: 8, gap: 4 },
   sideHead: { flexDirection: "row", alignItems: "center", gap: 10 },
   sideIcon: { width: 36, height: 36, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   sideTitle: { color: C.text, fontSize: 14, fontWeight: "700" },
@@ -1463,41 +1570,53 @@ const styles = StyleSheet.create({
   errorBox: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(255,80,60,0.1)", borderRadius: 7, borderWidth: 1, borderColor: "rgba(255,80,60,0.3)", padding: 8 },
   errorTxt: { color: C.red, fontSize: 11, flex: 1 },
 
-  main: { flex: 1, flexDirection: "column" },
+  main: { flex: 1, flexDirection: "column", minHeight: 0, minWidth: 0 },
 
-  toolbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 10, borderBottomWidth: 1, borderBottomColor: C.border, gap: 10 },
-  modeRow: { flexDirection: "row", gap: 5, flexWrap: "wrap" },
+  toolbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 10, borderBottomWidth: 1, borderBottomColor: C.border, gap: 10, flexShrink: 0 },
+  toolbarCompact: { paddingHorizontal: 8, paddingVertical: 6 },
+  modeRow: { flexDirection: "row", gap: 5, flexWrap: "wrap", alignItems: "center" },
   modeBtn: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, borderWidth: 1, flexDirection: "row", alignItems: "center", gap: 4 },
   modeTxt: { fontSize: 9, fontWeight: "700", letterSpacing: 0.5 },
 
-  hexArea: { flex: 1 },
+  hexArea: { flex: 1, minHeight: 0 },
   hexContent: { padding: 10, gap: 8 },
   hexFileHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "rgba(35,39,41,1)", borderRadius: 6, padding: 8, marginBottom: 4 },
   hexFileHeaderLeft: { flexDirection: "row", alignItems: "center", gap: 7 },
   hexFileHeaderName: { color: C.text, fontSize: 12, fontWeight: "600" },
   hexFileHeaderSize: { color: C.muted, fontSize: 9 },
 
-  emptyHex: { flex: 1, padding: 20, gap: 20, alignItems: "center", justifyContent: "center" },
+  emptyScroll: { flex: 1, minHeight: 0 },
+  emptyHex: { flexGrow: 1, padding: 20, gap: 20, alignItems: "center", paddingBottom: 24 },
+  emptyHexCompact: { padding: 12, gap: 12, justifyContent: "flex-start" },
+  emptyHexTight: { padding: 8, gap: 8 },
   dropZone: { width: "100%", maxWidth: 440, borderRadius: 12, borderWidth: 2, borderStyle: "dashed", borderColor: "rgba(51,56,58,1)", overflow: "hidden" },
+  dropZoneCompact: { maxWidth: "100%" },
   dropZoneInner: { padding: 32, alignItems: "center", gap: 12 },
+  dropZoneInnerCompact: { padding: 16, gap: 8 },
   dropTitle: { color: C.text, fontSize: 18, fontWeight: "600" },
+  dropTitleCompact: { fontSize: 15 },
   dropSub: { color: C.muted, fontSize: 11, textAlign: "center" },
+  dropSubCompact: { fontSize: 10, lineHeight: 14 },
   dropBtn: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(255,200,50,0.12)", borderRadius: 8, paddingHorizontal: 20, paddingVertical: 10, borderWidth: 1, borderColor: "rgba(255,200,50,0.4)" },
   dropBtnTxt: { color: C.yellow, fontSize: 13, fontWeight: "700" },
 
   featureGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12, justifyContent: "center", maxWidth: 440, width: "100%" },
+  featureGridCompact: { gap: 8, maxWidth: "100%" },
   featureCard: { width: "45%", backgroundColor: C.card, borderRadius: 10, borderWidth: 1, padding: 14, gap: 6, minWidth: 140 },
+  featureCardCompact: { width: "47%", minWidth: 0, padding: 10, gap: 4 },
   featureIcon: { width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   featureLabel: { color: C.text, fontSize: 12, fontWeight: "700" },
   featureDesc: { color: C.muted, fontSize: 10 },
 
-  streamBox:   { flexDirection: "column", gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: "rgba(14,18,20,1)" },
+  streamBox:   { flexDirection: "column", gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: "rgba(14,18,20,1)", flexShrink: 0 },
+  streamBoxCompact: { paddingHorizontal: 8, paddingVertical: 4, gap: 2 },
   streamHead:  { flexDirection: "row", alignItems: "center", gap: 6 },
   streamTitle: { color: C.green, fontSize: 9, fontWeight: "700", letterSpacing: 0.8, flex: 1 },
   streamCount: { color: C.muted, fontSize: 9 },
   streamEmpty: { color: C.muted, fontSize: 9, fontStyle: "italic" },
 
-  statusStrip: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingTop: 6, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: "rgba(22,26,28,1)" },
+  statusStrip: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingTop: 6, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: "rgba(22,26,28,1)", flexShrink: 0 },
+  statusStripCompact: { paddingHorizontal: 8, paddingTop: 4 },
   statusDot: { width: 6, height: 6, borderRadius: 3 },
   statusTxt: { flex: 1, color: C.muted, fontSize: 9 },
   statusRight: { color: "rgba(60,62,62,1)", fontSize: 9 },

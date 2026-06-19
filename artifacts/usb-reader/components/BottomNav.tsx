@@ -8,6 +8,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { usePathname, useRouter } from 'expo-router';
 import { useUsb } from '@/context/UsbContext';
+import { useDeviceScale } from '@/hooks/useDeviceScale';
 import { Colors, Typography, Spacing, Border } from '../theme';
 
 type MCIcon = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
@@ -59,10 +60,10 @@ const TABS: TabDef[] = [
     color: Colors.secondary,
   },
   {
-    icon: 'send-outline',
-    activeIcon: 'send',
-    label: 'Write',
-    href: '/write',
+    icon: 'file-delimited-outline',
+    activeIcon: 'file-delimited',
+    label: 'CSV Log',
+    href: '/csv_log',
     color: Colors.tertiary,
   },
   {
@@ -79,9 +80,11 @@ export function BottomNav() {
   const router   = useRouter();
   const { connectionStatus } = useUsb();
   const isConnected = connectionStatus === 'connected';
+  const { navIconSize, navBarHeight, navShowLabels, isCompact } = useDeviceScale();
+  const liveDotSize = Math.max(5, Math.round(navIconSize * 0.35));
 
   return (
-    <View style={s.bar}>
+    <View style={[s.bar, { height: navBarHeight }]}>
       {TABS.map((tab) => {
         const isActive = tab.isHome
           ? pathname === '/' || pathname === ''
@@ -102,22 +105,25 @@ export function BottomNav() {
                 },
               ]}
             >
-              {/* Active indicator line at top */}
               {isActive && (
                 <View style={[s.activeBar, { backgroundColor: tab.color }]} />
               )}
               <View style={s.iconWrap}>
                 <MaterialCommunityIcons
                   name={isActive ? tab.activeIcon : tab.icon}
-                  size={18}
+                  size={navIconSize}
                   color={isActive ? tab.color : Colors.onSurfaceVariant}
                 />
-                {/* Live connection dot on Dashboard */}
                 {tab.isHome && (
                   <View
                     style={[
                       s.liveDot,
                       {
+                        width: liveDotSize,
+                        height: liveDotSize,
+                        borderRadius: liveDotSize / 2,
+                        top: -Math.round(liveDotSize * 0.3),
+                        right: -Math.round(liveDotSize * 0.5),
                         backgroundColor: isConnected
                           ? Colors.tertiary
                           : Colors.surfaceContainerHigh,
@@ -126,9 +132,11 @@ export function BottomNav() {
                   />
                 )}
               </View>
-              <Text style={[s.label, { color: isActive ? tab.color : Colors.onSurfaceVariant }]}>
-                {tab.label}
-              </Text>
+              {navShowLabels && (
+                <Text style={[s.label, isCompact && s.labelCompact, { color: isActive ? tab.color : Colors.onSurfaceVariant }]}>
+                  {tab.label}
+                </Text>
+              )}
             </View>
           </Pressable>
         );
@@ -140,7 +148,6 @@ export function BottomNav() {
 const s = StyleSheet.create({
   bar: {
     flexDirection: 'row',
-    height: 58,
     backgroundColor: Colors.surfaceContainerLowest,
     borderTopWidth: Border.widthThick,
     borderTopColor: Border.color,
@@ -185,5 +192,9 @@ const s = StyleSheet.create({
     ...Typography.labelCaps,
     fontSize: 8,
     letterSpacing: 0.5,
+  },
+  labelCompact: {
+    fontSize: 7,
+    letterSpacing: 0.3,
   },
 });

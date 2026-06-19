@@ -7,11 +7,13 @@ import {
   ScrollView,
   Pressable,
   StyleSheet,
+  useWindowDimensions,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb } from "@/context/UsbContext";
 import { useDiagnosisTelemetryData } from "@/hooks/useDiagnosisTelemetryData";
+import { useDeviceScale } from "@/hooks/useDeviceScale";
 import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
 import { UsbConnectionBar } from "@/components/UsbConnectionBar";
@@ -76,12 +78,22 @@ function fmtN(v: number): string {
   return v.toFixed(DEC);
 }
 
+/** Format integer decimal values (RPM, SOC %, error codes, cell IDs). */
+function fmtInt(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  return String(Math.round(v));
+}
+
 function show(isConnected: boolean, text: string): string {
   return isConnected ? text : "—";
 }
 
 function showNum(isConnected: boolean, v: number, unit = ""): string {
   return isConnected ? `${fmtN(v)}${unit}` : "—";
+}
+
+function showInt(isConnected: boolean, v: number, unit = ""): string {
+  return isConnected ? `${fmtInt(v)}${unit}` : "—";
 }
 
 function socColor(s: number) {
@@ -134,10 +146,13 @@ function MetricCard({
   icon: React.ComponentProps<typeof MaterialCommunityIcons>["name"];
   label: string; value: string; unit: string; color: string; bg: string;
 }) {
+  const { icon: iconScale } = useDeviceScale();
+  const iconSize = iconScale(16, 12);
+  const iconBox = Math.round(iconSize * 1.9);
   return (
     <View style={[mc.card, { borderColor: `${color}35` }]}>
-      <View style={[mc.icon, { backgroundColor: bg }]}>
-        <MaterialCommunityIcons name={icon} size={16} color={color} />
+      <View style={[mc.icon, { backgroundColor: bg, width: iconBox, height: iconBox }]}>
+        <MaterialCommunityIcons name={icon} size={iconSize} color={color} />
       </View>
       <Text style={[mc.val, { color }]}>{value}</Text>
       <Text style={mc.unit}>{unit}</Text>
@@ -168,9 +183,17 @@ const TABS: { id: Tab; label: string; icon: React.ComponentProps<typeof Material
 
 // ─── MAIN SCREEN ───────────────────────────────────────────────
 export default function DiagnosticsScreen() {
+  const { width: screenW, height: screenH } = useWindowDimensions();
+  const { icon } = useDeviceScale();
+  const iconSm = icon(13, 10);
+  const iconMd = icon(16, 12);
+  const iconLg = icon(18, 14);
+  const isCompact = screenW < 768;
+  const isLandscape = screenW > screenH;
+
   const { connectionStatus, quickConnect, writeData } = useUsb();
   const isConnected = connectionStatus === "connected";
-  const { p, packetsRef, resetTs } = useDiagnosisTelemetryData(isConnected);
+  const { p, packetsRef, resetTs, resetTelemetry } = useDiagnosisTelemetryData(isConnected);
 
   const connectionRef = useRef(connectionStatus);
   useEffect(() => {
@@ -296,7 +319,8 @@ export default function DiagnosticsScreen() {
     setDiagStatus("running");
     setDiagLog([]);
     lastLoggedTsRef.current = -1;
-    resetTs();
+    // Start each run from a clean RX buffer so old telemetry is never reused.
+    resetTelemetry();
     log(">> Diagnosis started");
     setDiagMsg('→ {"cmd":"diagnosis"}');
 
@@ -422,7 +446,7 @@ export default function DiagnosticsScreen() {
       runningRef.current = false;
       log(">> Diagnosis ended");
     }
-  }, [quickConnect, writeData, log, resetTs]);
+  }, [quickConnect, writeData, log, resetTelemetry]);
 
   const diagStatusColor =
     diagStatus === "ok" ? C.green :
@@ -430,88 +454,75 @@ export default function DiagnosticsScreen() {
     diagStatus === "running" ? C.yellow :
     C.muted;
 
+  const diagStatusText =
+    diagStatus === "idle"
+      ? isConnected
+        ? "Live telemetry — auto updates when data arrives"
+        : "Connect USB for live diagnostics"
+      : diagStatus === "running"
+        ? diagMsg
+        : diagMsg || (diagStatus === "ok" ? "Ready" : "Failed");
+
+  const openLog = useCallback(() => {
+    Haptics.selectionAsync();
+    setLogModalVisible(true);
+  }, []);
+
+  const toolbarActions = (
+    <View style={ha.row}>
+      <Pressable
+        style={({ pressed }) => [ha.logBtn, pressed && ha.pressed]}
+        onPress={openLog}
+        accessibilityLabel="Open diagnosis log"
+      >
+        <MaterialCommunityIcons name="text-box-outline" size={iconSm} color={C.blue} />
+        <Text style={ha.logBtnTxt}>LOG</Text>
+        {diagLog.length > 0 && (
+          <View style={ha.logBadge}>
+            <Text style={ha.logBadgeTxt}>{diagLog.length > 99 ? "99+" : diagLog.length}</Text>
+          </View>
+        )}
+      </Pressable>
+      <Pressable
+        style={({ pressed }) => [
+          ha.runBtn,
+          (!isConnected || diagStatus === "running") && ha.runBtnDisabled,
+          pressed && isConnected && diagStatus !== "running" && ha.pressed,
+        ]}
+        disabled={!isConnected || diagStatus === "running"}
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          runDiagnosis();
+        }}
+        accessibilityLabel="Run diagnosis"
+      >
+        {diagStatus === "running" ? (
+          <ActivityIndicator size="small" color={Colors.onPrimary} />
+        ) : (
+          <>
+            <MaterialCommunityIcons name="play-circle-outline" size={iconSm} color={Colors.onPrimary} />
+            <Text style={ha.runBtnTxt}>RUN</Text>
+          </>
+        )}
+      </Pressable>
+    </View>
+  );
+
   return (
     <View style={s.root}>
       <Header />
-      {/* Shared USB connection bar */}
-      <UsbConnectionBar compact />
+      <UsbConnectionBar compact trailing={toolbarActions} />
 
-      <View style={s.diagBar}>
-        <View style={s.diagBarText}>
-          <Text style={s.diagBarTitle}>BMS diagnostics</Text>
-          <Text style={[s.diagBarSub, { color: diagStatusColor }]}>
-            {diagStatus === "idle"
-              ? isConnected
-                ? "Live telemetry — auto updates when data arrives"
-                : "Connect USB for live diagnostics"
-              : diagStatus === "running"
-                ? diagMsg
-                : diagMsg || (diagStatus === "ok" ? "Ready" : "Failed")}
+      {isCompact && !isLandscape && (
+        <View style={s.rotateBanner}>
+          <MaterialCommunityIcons name="phone-rotate-landscape" size={iconLg} color={C.blue} />
+          <Text style={s.rotateBannerTxt}>
+            Rotate your phone horizontally for the best diagnostics view
           </Text>
         </View>
-        <Pressable
-          style={({ pressed }) => [
-            s.diagBtn,
-            (!isConnected || diagStatus === "running") && s.diagBtnDisabled,
-            pressed && isConnected && diagStatus !== "running" && { opacity: 0.85 },
-          ]}
-          disabled={!isConnected || diagStatus === "running"}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            runDiagnosis();
-          }}
-        >
-          {diagStatus === "running" ? (
-            <ActivityIndicator size="small" color={Colors.onPrimary} />
-          ) : (
-            <>
-              <MaterialCommunityIcons name="play-circle-outline" size={20} color={Colors.onPrimary} />
-              <Text style={s.diagBtnLabel}>Run diagnosis</Text>
-            </>
-          )}
-        </Pressable>
-      </View>
+      )}
 
-      {/* Diagnosis log preview */}
-      <View style={dl.wrap}>
-        <View style={dl.head}>
-          <MaterialCommunityIcons name="text-box-outline" size={14} color={C.blue} />
-          <Text style={dl.headTitle}>DIAGNOSIS LOG</Text>
-          <Text style={dl.headCount}>{diagLog.length} lines</Text>
-          <Pressable
-            style={dl.viewBtn}
-            onPress={() => {
-              Haptics.selectionAsync();
-              setLogModalVisible(true);
-            }}
-          >
-            <Text style={dl.viewBtnTxt}>VIEW FULL</Text>
-          </Pressable>
-        </View>
-        <View style={dl.logBox}>
-          {diagLog.length === 0 ? (
-            <Text style={dl.logEmpty}>Connect USB and run diagnosis — TX/RX logged here</Text>
-          ) : (
-            diagLog.slice(-5).map((line, i) => (
-              <Text
-                key={`${diagLog.length - 5 + i}-${line.slice(0, 24)}`}
-                style={[
-                  dl.logLine,
-                  line.includes("✗") || line.includes("FATAL") ? { color: C.red } :
-                  line.includes("✓") ? { color: C.green } :
-                  line.startsWith(">>") ? { color: C.yellow } :
-                  line.startsWith("→") ? { color: C.blue } :
-                  undefined,
-                ]}
-                numberOfLines={2}
-              >
-                {line}
-              </Text>
-            ))
-          )}
-        </View>
-      </View>
-
+     
       <Modal
         visible={logModalVisible}
         animationType="slide"
@@ -519,9 +530,11 @@ export default function DiagnosticsScreen() {
         onRequestClose={() => setLogModalVisible(false)}
       >
         <View style={dl.modalOverlay}>
+          <Pressable style={dl.modalDismissArea} onPress={() => setLogModalVisible(false)} />
           <View style={dl.modalBox}>
+            <View style={dl.modalHandle} />
             <View style={dl.modalHead}>
-              <MaterialCommunityIcons name="text-box-multiple-outline" size={16} color={C.green} />
+              <MaterialCommunityIcons name="text-box-multiple-outline" size={iconMd} color={C.green} />
               <Text style={dl.modalTitle}>DIAGNOSIS LOG</Text>
               <Text style={dl.modalCount}>{diagLog.length} lines</Text>
               <View style={{ flex: 1 }} />
@@ -544,7 +557,7 @@ export default function DiagnosticsScreen() {
                 </Text>
               </View>
               <Pressable style={dl.modalClose} onPress={() => setLogModalVisible(false)}>
-                <MaterialCommunityIcons name="close" size={18} color={C.muted} />
+                <MaterialCommunityIcons name="close" size={iconLg} color={C.muted} />
               </Pressable>
             </View>
 
@@ -595,108 +608,111 @@ export default function DiagnosticsScreen() {
         </View>
       </Modal>
 
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={s.body} showsVerticalScrollIndicator={false}>
-
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={[s.body, isCompact && s.bodyCompact]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Top Metrics Row - 6 Cards */}
-        <View style={s.topMetricsRow}>
+        <View style={[s.topMetricsRow, isCompact && s.topMetricsRowCompact]}>
           {/* Pack Voltage */}
-          <View style={s.metricCard}>
+          <View style={[s.metricCard, isCompact && s.metricCardCompact]}>
             <Text style={s.metricLabel}>PACK VOLTAGE</Text>
             <View style={[s.metricDivider, { backgroundColor: "#92ccff" }]} />
             <View style={s.metricValueRow}>
-              <Text style={s.metricValue}>{showNum(isConnected, p.packVoltageV)}</Text>
+              <Text style={[s.metricValue, isCompact && s.metricValueCompact]}>{showNum(isConnected, p.packVoltageV)}</Text>
               <Text style={s.metricUnit}>V</Text>
             </View>
           </View>
 
           {/* Pack Current */}
-          <View style={s.metricCard}>
+          <View style={[s.metricCard, isCompact && s.metricCardCompact]}>
             <Text style={s.metricLabel}>PACK CURRENT</Text>
             <View style={[s.metricDivider, { backgroundColor: "#54e98a" }]} />
             <View style={s.metricValueRow}>
-              <Text style={[s.metricValue, { color: "#54e98a" }]}>{showNum(isConnected, p.packCurrentA)}</Text>
+              <Text style={[s.metricValue, { color: "#54e98a" }, isCompact && s.metricValueCompact]}>{showNum(isConnected, p.packCurrentA)}</Text>
               <Text style={s.metricUnit}>A</Text>
             </View>
           </View>
 
           {/* Pack Temp */}
-          <View style={s.metricCard}>
+          <View style={[s.metricCard, isCompact && s.metricCardCompact]}>
             <Text style={s.metricLabel}>PACK TEMP</Text>
             <View style={[s.metricDivider, { backgroundColor: "#58e5c2" }]} />
             <View style={s.metricValueRow}>
-              <Text style={[s.metricValue, { color: "#58e5c2" }]}>{showNum(isConnected, p.packTempC)}</Text>
+              <Text style={[s.metricValue, { color: "#58e5c2" }, isCompact && s.metricValueCompact]}>{showNum(isConnected, p.packTempC)}</Text>
               <Text style={s.metricUnit}>°C</Text>
             </View>
           </View>
 
           {/* Min Cell */}
-          <View style={s.metricCard}>
+          <View style={[s.metricCard, isCompact && s.metricCardCompact]}>
             <Text style={s.metricLabel}>MIN CELL</Text>
             <View style={[s.metricDivider, { backgroundColor: "#92ccff" }]} />
             <View style={s.metricValueRow}>
-              <Text style={s.metricValue}>{showNum(isConnected, p.minV)}</Text>
+              <Text style={[s.metricValue, isCompact && s.metricValueCompact]}>{showNum(isConnected, p.minV)}</Text>
               <Text style={s.metricUnit}>V</Text>
             </View>
           </View>
 
           {/* Max Cell */}
-          <View style={s.metricCard}>
+          <View style={[s.metricCard, isCompact && s.metricCardCompact]}>
             <Text style={s.metricLabel}>MAX CELL</Text>
             <View style={[s.metricDivider, { backgroundColor: "#54e98a" }]} />
             <View style={s.metricValueRow}>
-              <Text style={s.metricValue}>{showNum(isConnected, p.maxV)}</Text>
+              <Text style={[s.metricValue, isCompact && s.metricValueCompact]}>{showNum(isConnected, p.maxV)}</Text>
               <Text style={s.metricUnit}>V</Text>
             </View>
           </View>
 
           {/* SOC */}
-          <View style={s.metricCard}>
+          <View style={[s.metricCard, isCompact && s.metricCardCompact]}>
             <Text style={s.metricLabel}>SOC</Text>
             <View style={[s.metricDivider, { backgroundColor: "#54e98a" }]} />
             <View style={s.metricValueRow}>
-              <Text style={[s.metricValue, { color: "#54e98a" }]}>{showNum(isConnected, p.soc)}</Text>
+              <Text style={[s.metricValue, { color: "#54e98a" }, isCompact && s.metricValueCompact]}>{showInt(isConnected, p.soc)}</Text>
               <Text style={s.metricUnit}>%</Text>
             </View>
           </View>
         </View>
 
         {/* Main Grid - 3 Cards */}
-        <View style={s.mainGrid}>
+        <View style={[s.mainGrid, isCompact && s.mainGridCompact]}>
           {/* HV + EVCC Card */}
-          <View style={s.mainCard}>
+          <View style={[s.mainCard, isCompact && s.mainCardCompact]}>
             <View style={s.cardHeader}>
               <View style={s.cardHeaderLeft}>
-                <MaterialCommunityIcons name="lightning-bolt" size={16} color="#92ccff" />
+                <MaterialCommunityIcons name="lightning-bolt" size={iconMd} color="#92ccff" />
                 <Text style={s.cardHeaderText}>HV + EVCC</Text>
               </View>
             </View>
-            <View style={s.cardContent}>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>HV BAT+ VOLTAGE</Text>
-                <Text style={s.dataValue}>{showNum(isConnected, p.batPlusV, " V")}</Text>
+            <View style={[s.cardContent, isCompact && s.cardContentCompact]}>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>HV BAT+ VOLTAGE</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.batPlusV, " V")}</Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>HV FC VOLTAGE</Text>
-                <Text style={s.dataValue}>{showNum(isConnected, p.fcV, " V")}</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>HV FC VOLTAGE</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.fcV, " V")}</Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>HV DCDC VOLTAGE</Text>
-                <Text style={s.dataValue}>{showNum(isConnected, p.dcdcHV, " V")}</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>HV DCDC VOLTAGE</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.dcdcHV, " V")}</Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>HV DSG VOLTAGE</Text>
-                <Text style={s.dataValue}>{showNum(isConnected, p.dsgV, " V")}</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>HV DSG VOLTAGE</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.dsgV, " V")}</Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>HV SC VOLTAGE</Text>
-                <Text style={s.dataValue}>{showNum(isConnected, p.scV, " V")}</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>HV SC VOLTAGE</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.scV, " V")}</Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>HV PCHG VOLTAGE</Text>
-                <Text style={s.dataValue}>{showNum(isConnected, p.pchgV, " V")}</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>HV PCHG VOLTAGE</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.pchgV, " V")}</Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>EVCC MSG</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>EVCC MSG</Text>
                 <View style={s.statusRow}>
                   <View style={[s.statusDot, { backgroundColor: isConnected ? "#54e98a" : "#37393d" }]} />
                   <Text style={[s.statusText, { color: isConnected ? "#54e98a" : "#64748b" }]}>
@@ -704,19 +720,19 @@ export default function DiagnosticsScreen() {
                   </Text>
                 </View>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>EVCC CAN ID</Text>
-                <Text style={s.dataValue}>{isConnected ? (p.evccLastCanId || "—") : "—"}</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>EVCC CAN ID</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{isConnected ? (p.evccLastCanId || "—") : "—"}</Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>EVCC DESC</Text>
-                <Text style={[s.dataValue, s.dataValueSmall]} numberOfLines={2}>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>EVCC DESC</Text>
+                <Text style={[s.dataValue, s.dataValueSmall, isCompact && s.dataValueCompact]} numberOfLines={3}>
                   {isConnected ? (p.evccDescription || "—") : "—"}
                 </Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>INSULATION</Text>
-                <Text style={[s.dataValue, { color: p.faultISO ? "#ffb4ab" : "#54e98a" }]}>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>INSULATION</Text>
+                <Text style={[s.dataValue, { color: p.faultISO ? "#ffb4ab" : "#54e98a" }, isCompact && s.dataValueRowCompact]}>
                   {p.faultISO ? "FAULT" : "OK"}
                 </Text>
               </View>
@@ -724,24 +740,24 @@ export default function DiagnosticsScreen() {
           </View>
 
           {/* DC-DC + Charger Card */}
-          <View style={s.mainCard}>
+          <View style={[s.mainCard, isCompact && s.mainCardCompact]}>
             <View style={s.cardHeader}>
               <View style={s.cardHeaderLeft}>
-                <MaterialCommunityIcons name="ev-station" size={16} color="#54e98a" />
+                <MaterialCommunityIcons name="ev-station" size={iconMd} color="#54e98a" />
                 <Text style={s.cardHeaderText}>DC-DC + CHARGER</Text>
               </View>
             </View>
-            <View style={s.cardContent}>
-              <View style={s.dcdcGrid}>
-                <View style={s.dcdcItem}>
+            <View style={[s.cardContent, isCompact && s.cardContentCompact]}>
+              <View style={[s.dcdcGrid, isCompact && s.dcdcGridCompact]}>
+                <View style={[s.dcdcItem, isCompact && s.dcdcItemCompact]}>
                   <Text style={s.dcdcLabel}>DCDC OUT</Text>
                   <Text style={s.dcdcValue}>{showNum(isConnected, p.dcdcVoltV, " V")}</Text>
                 </View>
-                <View style={s.dcdcItem}>
+                <View style={[s.dcdcItem, isCompact && s.dcdcItemCompact]}>
                   <Text style={s.dcdcLabel}>DCDC LOAD</Text>
                   <Text style={s.dcdcValue}>{showNum(isConnected, p.dcdcCurrentA, " A")}</Text>
                 </View>
-                <View style={s.dcdcItem}>
+                <View style={[s.dcdcItem, isCompact && s.dcdcItemCompact]}>
                   <Text style={s.dcdcLabel}>DCDC TEMP</Text>
                   <Text style={s.dcdcValue}>{showNum(isConnected, p.dcdcTempC, " °C")}</Text>
                 </View>
@@ -752,17 +768,71 @@ export default function DiagnosticsScreen() {
                   {isConnected ? (p.chrgrStatus || "—") : "OFFLINE"}
                 </Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>CHARGER VOLTAGE</Text>
-                <Text style={s.dataValue}>{showNum(isConnected, p.chrgrVoltV, " V")}</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>CHARGER VOLTAGE</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.chrgrVoltV, " V")}</Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>CHARGER CURRENT</Text>
-                <Text style={s.dataValue}>{showNum(isConnected, p.chrgrCurrentA, " A")}</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>CHARGER CURRENT</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.chrgrCurrentA, " A")}</Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>CHARGER ERROR</Text>
-                <Text style={s.dataValue}>{showNum(isConnected, p.chrgrErrorCode)}</Text>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>CHARGER ERROR</Text>
+                <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showInt(isConnected, p.chrgrErrorCode)}</Text>
+              </View>
+              <View style={s.dcdc2Section}>
+                <Text style={s.dcdc2Title}>DC-DC 2 (0x18F8622B)</Text>
+                <View style={[s.dcdcGrid, isCompact && s.dcdcGridCompact]}>
+                  <View style={[s.dcdcItem, isCompact && s.dcdcItemCompact]}>
+                    <Text style={s.dcdcLabel}>DCDC2 OUT</Text>
+                    <Text style={s.dcdcValue}>{showNum(isConnected, p.dcdc2VoltV, " V")}</Text>
+                  </View>
+                  <View style={[s.dcdcItem, isCompact && s.dcdcItemCompact]}>
+                    <Text style={s.dcdcLabel}>DCDC2 LOAD</Text>
+                    <Text style={s.dcdcValue}>{showNum(isConnected, p.dcdc2CurrentA, " A")}</Text>
+                  </View>
+                  <View style={[s.dcdcItem, isCompact && s.dcdcItemCompact]}>
+                    <Text style={s.dcdcLabel}>DCDC2 TEMP</Text>
+                    <Text style={s.dcdcValue}>{showNum(isConnected, p.dcdc2TempC, " °C")}</Text>
+                  </View>
+                </View>
+                <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                  <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>WORK STATE</Text>
+                  <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{show(isConnected, p.dcdc2WorkState)}</Text>
+                </View>
+                <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                  <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>FAULT LEVEL</Text>
+                  <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{show(isConnected, p.dcdc2FaultLevel)}</Text>
+                </View>
+                <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                  <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>SYS STATE</Text>
+                  <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{show(isConnected, p.dcdc2SysState)}</Text>
+                </View>
+                <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                  <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>ERR FLAGS</Text>
+                  <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showInt(isConnected, p.dcdc2ErrFlags)}</Text>
+                </View>
+                <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                  <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>VERSION</Text>
+                  <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showInt(isConnected, p.dcdc2Version)}</Text>
+                </View>
+                <Text style={[s.dcdc2Title, { marginTop: 8 }]}>DC-DC 2 CMD (0x10262B27)</Text>
+                <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                  <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>CMD MODE</Text>
+                  <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{show(isConnected, p.dcdc2CmdMode)}</Text>
+                </View>
+                <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                  <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>V SET</Text>
+                  <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.dcdc2CmdVset, " V")}</Text>
+                </View>
+                <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                  <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>I SET</Text>
+                  <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{showNum(isConnected, p.dcdc2CmdIset, " A")}</Text>
+                </View>
+                <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                  <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>RESET</Text>
+                  <Text style={[s.dataValue, isCompact && s.dataValueRowCompact]}>{show(isConnected, p.dcdc2CmdReset)}</Text>
+                </View>
               </View>
               <View style={s.statusGrid}>
                 <View style={s.statusItem}>
@@ -786,18 +856,18 @@ export default function DiagnosticsScreen() {
           </View>
 
           {/* Motor + Relays Card */}
-          <View style={s.mainCard}>
+          <View style={[s.mainCard, isCompact && s.mainCardCompact]}>
             <View style={s.cardHeader}>
               <View style={s.cardHeaderLeft}>
-                <MaterialCommunityIcons name="cog" size={16} color="#58e5c2" />
+                <MaterialCommunityIcons name="cog" size={iconMd} color="#58e5c2" />
                 <Text style={s.cardHeaderText}>MOTOR + RELAYS</Text>
               </View>
             </View>
-            <View style={s.cardContent}>
+            <View style={[s.cardContent, isCompact && s.cardContentCompact]}>
               <View style={s.motorSection}>
                 <View style={s.motorHeader}>
                   <Text style={s.motorLabel}>MOTOR RPM</Text>
-                  <Text style={s.motorValue}>{showNum(isConnected, p.motorRpm)}</Text>
+                  <Text style={s.motorValue}>{showInt(isConnected, p.motorRpm)}</Text>
                 </View>
                 <View style={s.progressBar}>
                   <View style={[s.progressFill, { width: isConnected ? `${Math.min((p.motorRpm / 3000) * 100, 100)}%` : "0%" }]} />
@@ -816,6 +886,12 @@ export default function DiagnosticsScreen() {
                 <View style={s.motorHeader}>
                   <Text style={s.motorLabel}>MOTOR RUNTIME</Text>
                   <Text style={s.motorValue}>{isConnected ? fmtUptime(p.motorRuntime) : "—"}</Text>
+                </View>
+              </View>
+              <View style={s.motorSection}>
+                <View style={s.motorHeader}>
+                  <Text style={s.motorLabel}>MOTOR LOAD</Text>
+                  <Text style={s.motorValue}>{showInt(isConnected, p.motorLoadPct, " %")}</Text>
                 </View>
               </View>
               <View style={s.relayGrid}>
@@ -873,29 +949,29 @@ export default function DiagnosticsScreen() {
         </View>
 
         {/* Bottom Grid - Cells + BMS Faults */}
-        <View style={s.bottomGrid}>
-          <View style={s.mainCard}>
+        <View style={[s.bottomGrid, isCompact && s.bottomGridCompact]}>
+          <View style={[s.mainCard, isCompact && s.mainCardCompact]}>
             <View style={s.cardHeader}>
               <View style={s.cardHeaderLeft}>
-                <MaterialCommunityIcons name="battery-heart" size={16} color={C.green} />
+                <MaterialCommunityIcons name="battery-heart" size={iconMd} color={C.green} />
                 <Text style={s.cardHeaderText}>CELLS</Text>
               </View>
               {isConnected && p.timestamp > 0 && (
                 <Text style={s.liveBadge}>LIVE · ts {p.timestamp}</Text>
               )}
             </View>
-            <View style={s.cardContent}>
-              <View style={s.cellsSummaryRow}>
+            <View style={[s.cardContent, isCompact && s.cardContentCompact]}>
+              <View style={[s.cellsSummaryRow, isCompact && s.cellsSummaryRowCompact]}>
                 <View style={s.cellsSummaryItem}>
                   <Text style={s.cellsSummaryLabel}>TOTAL CELLS</Text>
                   <Text style={s.cellsSummaryValue}>
-                    {isConnected ? String(p.totalCells) : "—"}
+                    {isConnected ? fmtInt(p.totalCells) : "—"}
                   </Text>
                 </View>
                 <View style={s.cellsSummaryItem}>
                   <Text style={s.cellsSummaryLabel}>CYCLE</Text>
                   <Text style={s.cellsSummaryValue}>
-                    {isConnected ? String(p.cycle) : "—"}
+                    {isConnected ? fmtInt(p.cycle) : "—"}
                   </Text>
                 </View>
                 <View style={s.cellsSummaryItem}>
@@ -904,7 +980,7 @@ export default function DiagnosticsScreen() {
                     {showNum(isConnected, p.minV, " V")}
                   </Text>
                   <Text style={s.cellsSummarySub}>
-                    ID {isConnected ? String(p.minCellId) : "—"}
+                    ID {isConnected ? fmtInt(p.minCellId) : "—"}
                   </Text>
                 </View>
                 <View style={s.cellsSummaryItem}>
@@ -913,34 +989,34 @@ export default function DiagnosticsScreen() {
                     {showNum(isConnected, p.maxV, " V")}
                   </Text>
                   <Text style={s.cellsSummarySub}>
-                    ID {isConnected ? String(p.maxCellId) : "—"}
+                    ID {isConnected ? fmtInt(p.maxCellId) : "—"}
                   </Text>
                 </View>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>CELL VOLTAGES (V)</Text>
-                <Text style={[s.dataValue, s.dataValueSmall]} numberOfLines={3}>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>CELL VOLTAGES (V)</Text>
+                <Text style={[s.dataValue, s.dataValueSmall, isCompact && s.dataValueCompact]} numberOfLines={4}>
                   {isConnected ? fmtCellList(p.cellVoltages) : "—"}
                 </Text>
               </View>
-              <View style={s.dataRow}>
-                <Text style={s.dataLabel}>CELL TEMPS (°C)</Text>
-                <Text style={[s.dataValue, s.dataValueSmall]} numberOfLines={3}>
+              <View style={[s.dataRow, isCompact && s.dataRowCompact]}>
+                <Text style={[s.dataLabel, isCompact && s.dataLabelCompact]}>CELL TEMPS (°C)</Text>
+                <Text style={[s.dataValue, s.dataValueSmall, isCompact && s.dataValueCompact]} numberOfLines={4}>
                   {isConnected ? fmtCellList(p.cellTemperatures) : "—"}
                 </Text>
               </View>
             </View>
           </View>
 
-          <View style={s.mainCard}>
+          <View style={[s.mainCard, isCompact && s.mainCardCompact]}>
             <View style={s.cardHeader}>
               <View style={s.cardHeaderLeft}>
-                <MaterialCommunityIcons name="alert-circle-outline" size={16} color="#ffb4ab" />
+                <MaterialCommunityIcons name="alert-circle-outline" size={iconMd} color="#ffb4ab" />
                 <Text style={s.cardHeaderText}>BMS FAULTS</Text>
               </View>
             </View>
-            <View style={s.cardContent}>
-              <View style={s.faultPillGrid}>
+            <View style={[s.cardContent, isCompact && s.cardContentCompact]}>
+              <View style={[s.faultPillGrid, isCompact && s.faultPillGridCompact]}>
                 {(
                   [
                     ["UV", p.faultUV],
@@ -973,51 +1049,88 @@ export default function DiagnosticsScreen() {
   );
 }
 
-const dl = StyleSheet.create({
-  wrap: {
-    marginHorizontal: 16,
-    marginBottom: 8,
-    backgroundColor: "#1C1F23",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
-    padding: 10,
-    gap: 8,
+const ha = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
-  head: { flexDirection: "row", alignItems: "center", gap: 8 },
-  headTitle: { color: C.text, fontSize: 11, fontWeight: "700", letterSpacing: 0.6 },
-  headCount: { color: C.muted, fontSize: 10, flex: 1 },
-  viewBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
+  pressed: { opacity: 0.85 },
+  logBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
     borderWidth: 1,
     borderColor: "rgba(80,180,255,0.35)",
     backgroundColor: "rgba(80,180,255,0.1)",
+    position: "relative",
   },
-  viewBtnTxt: { color: C.blue, fontSize: 9, fontWeight: "700", letterSpacing: 0.4 },
-  logBox: {
-    backgroundColor: "rgba(10,14,16,1)",
-    borderRadius: 6,
+  logBtnTxt: {
+    color: C.blue,
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+  },
+  logBadge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    minWidth: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: C.orange,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 3,
+  },
+  logBadgeTxt: {
+    color: Colors.onPrimary,
+    fontSize: 8,
+    fontWeight: "800",
+  },
+  runBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
     borderWidth: 1,
-    borderColor: C.border,
-    padding: 8,
-    minHeight: 72,
-    maxHeight: 96,
-    gap: 2,
+    borderColor: `${Colors.primary}55`,
+    backgroundColor: Colors.primary,
+    minWidth: 52,
+    justifyContent: "center",
   },
-  logEmpty: { color: C.muted, fontSize: 9, fontStyle: "italic" },
-  logLine: { color: "rgba(140,220,170,1)", fontSize: 9, fontFamily: "monospace", lineHeight: 13 },
+  runBtnDisabled: { opacity: 0.45 },
+  runBtnTxt: {
+    color: Colors.onPrimary,
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+  },
+});
 
+const dl = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.75)", justifyContent: "flex-end" },
+  modalDismissArea: { flex: 1 },
   modalBox: {
     backgroundColor: "rgba(14,18,20,1)",
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     borderWidth: 1,
     borderColor: C.border,
-    maxHeight: "85%",
-    minHeight: "55%",
+    maxHeight: "88%",
+    minHeight: "50%",
+  },
+  modalHandle: {
+    alignSelf: "center",
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    marginTop: 8,
+    marginBottom: 4,
   },
   modalHead: {
     flexDirection: "row",
@@ -1063,46 +1176,53 @@ const dl = StyleSheet.create({
 const s = StyleSheet.create({
   root:   { flex: 1, backgroundColor: "#111316", flexDirection: "column" },
   body:   { padding: 16, gap: 16 },
+  bodyCompact: { padding: 10, gap: 10, paddingBottom: 24 },
 
-  diagBar: {
+  rotateBanner: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
+    gap: 10,
+    marginHorizontal: 10,
+    marginBottom: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "rgba(80,180,255,0.08)",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(80,180,255,0.25)",
+  },
+  rotateBannerTxt: {
+    flex: 1,
+    color: C.blue,
+    fontSize: 11,
+    fontWeight: "600",
+    lineHeight: 15,
+  },
+  statusStrip: {
     marginHorizontal: 16,
     marginBottom: 8,
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     backgroundColor: "#1C1F23",
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.08)",
+    gap: 2,
   },
-  diagBarText: { flex: 1, gap: 4 },
-  diagBarTitle: {
+  statusStripCompact: {
+    marginHorizontal: 10,
+    marginBottom: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  statusStripTitle: {
     color: "#E8EAED",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  diagBarSub: {
     fontSize: 12,
-    color: "#9AA0A6",
-  },
-  diagBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    minWidth: 120,
-    justifyContent: "center",
-  },
-  diagBtnDisabled: { opacity: 0.45 },
-  diagBtnLabel: {
-    color: Colors.onPrimary,
-    fontSize: 13,
     fontWeight: "600",
+  },
+  statusStripSub: {
+    fontSize: 11,
+    color: "#9AA0A6",
   },
 
   liveBadge: {
@@ -1116,6 +1236,9 @@ const s = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
     marginBottom: 8,
+  },
+  cellsSummaryRowCompact: {
+    gap: 6,
   },
   cellsSummaryItem: {
     flex: 1,
@@ -1149,6 +1272,9 @@ const s = StyleSheet.create({
     flexWrap: "wrap",
     gap: 10,
   },
+  faultPillGridCompact: {
+    gap: 6,
+  },
   faultPillItem: {
     width: "47%",
     flexDirection: "row",
@@ -1173,6 +1299,10 @@ const s = StyleSheet.create({
     gap: 8,
     marginBottom: 16,
   },
+  topMetricsRowCompact: {
+    marginBottom: 8,
+    gap: 6,
+  },
   metricCard: {
     flex: 1,
     minWidth: "30%",
@@ -1181,6 +1311,13 @@ const s = StyleSheet.create({
     borderColor: "rgba(255, 255, 255, 0.08)",
     borderRadius: 8,
     padding: 12,
+  },
+  metricCardCompact: {
+    minWidth: "47%",
+    padding: 10,
+  },
+  metricValueCompact: {
+    fontSize: 20,
   },
   metricLabel: {
     color: "#bbcbbb",
@@ -1216,12 +1353,21 @@ const s = StyleSheet.create({
     gap: 16,
     marginBottom: 16,
   },
+  mainGridCompact: {
+    flexDirection: "column",
+    gap: 10,
+    marginBottom: 10,
+  },
   mainCard: {
     flex: 1,
     backgroundColor: "#1C1F23",
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.08)",
     borderRadius: 8,
+  },
+  mainCardCompact: {
+    flex: undefined,
+    width: "100%",
   },
   cardHeader: {
     flexDirection: "row",
@@ -1245,6 +1391,9 @@ const s = StyleSheet.create({
   cardContent: {
     padding: 12,
   },
+  cardContentCompact: {
+    padding: 10,
+  },
 
   // Data Rows
   dataRow: {
@@ -1255,20 +1404,40 @@ const s = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255, 255, 255, 0.05)",
   },
+  dataRowCompact: {
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 2,
+    paddingVertical: 6,
+  },
   dataLabel: {
     color: "#bbcbbb",
     fontSize: 11,
     fontWeight: "500",
+  },
+  dataLabelCompact: {
+    fontSize: 10,
   },
   dataValue: {
     color: "#e2e2e6",
     fontSize: 14,
     fontWeight: "500",
   },
+  dataValueRowCompact: {
+    fontSize: 13,
+    alignSelf: "stretch",
+    textAlign: "left",
+  },
   dataValueSmall: {
     fontSize: 10,
     maxWidth: 160,
     textAlign: "right",
+  },
+  dataValueCompact: {
+    maxWidth: undefined,
+    textAlign: "left",
+    alignSelf: "stretch",
+    fontSize: 10,
   },
   statusRow: {
     flexDirection: "row",
@@ -1291,11 +1460,21 @@ const s = StyleSheet.create({
     gap: 12,
     marginBottom: 16,
   },
+  dcdcGridCompact: {
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 10,
+  },
   dcdcItem: {
     flex: 1,
     backgroundColor: "#1e2023",
     padding: 12,
     borderRadius: 6,
+  },
+  dcdcItemCompact: {
+    minWidth: "30%",
+    flexGrow: 1,
+    padding: 8,
   },
   dcdcLabel: {
     color: "#bbcbbb",
@@ -1306,6 +1485,20 @@ const s = StyleSheet.create({
     color: "#e2e2e6",
     fontSize: 16,
     fontWeight: "500",
+  },
+  dcdc2Section: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.06)",
+    gap: 4,
+  },
+  dcdc2Title: {
+    color: "#92ccff",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    marginBottom: 8,
   },
   chargingStatus: {
     flexDirection: "row",
@@ -1408,6 +1601,10 @@ const s = StyleSheet.create({
   bottomGrid: {
     flexDirection: "row",
     gap: 8,
+  },
+  bottomGridCompact: {
+    flexDirection: "column",
+    gap: 10,
   },
   fieldNavigationCard: {
     backgroundColor: "#1C1F23",

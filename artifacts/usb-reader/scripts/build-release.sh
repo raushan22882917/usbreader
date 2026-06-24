@@ -62,9 +62,9 @@ if [ "$BUILD_AAB" = true ]; then
   echo "🔨 Building AAB..."
   ./gradlew bundleRelease $ARCH_FLAG \
     -PRELEASE_STORE_FILE=release.keystore \
-    -PRELEASE_STORE_PASSWORD="${RELEASE_STORE_PASSWORD:-android}" \
+    -PRELEASE_STORE_PASSWORD="${RELEASE_STORE_PASSWORD:-Autonxt@2288}" \
     -PRELEASE_KEY_ALIAS="${RELEASE_KEY_ALIAS:-usbreader}" \
-    -PRELEASE_KEY_PASSWORD="${RELEASE_KEY_PASSWORD:-android}"
+    -PRELEASE_KEY_PASSWORD="${RELEASE_KEY_PASSWORD:-Autonxt@2288}"
 
   OUTPUT="$ANDROID_DIR/app/build/outputs/bundle/release/app-release.aab"
   echo ""
@@ -73,9 +73,9 @@ else
   echo "🔨 Building APK..."
   ./gradlew assembleRelease $ARCH_FLAG \
     -PRELEASE_STORE_FILE=release.keystore \
-    -PRELEASE_STORE_PASSWORD="${RELEASE_STORE_PASSWORD:-android}" \
+    -PRELEASE_STORE_PASSWORD="${RELEASE_STORE_PASSWORD:-Autonxt@2288}" \
     -PRELEASE_KEY_ALIAS="${RELEASE_KEY_ALIAS:-usbreader}" \
-    -PRELEASE_KEY_PASSWORD="${RELEASE_KEY_PASSWORD:-android}"
+    -PRELEASE_KEY_PASSWORD="${RELEASE_KEY_PASSWORD:-Autonxt@2288}"
 
   OUTPUT="$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk"
   echo ""

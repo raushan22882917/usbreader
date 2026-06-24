@@ -11,4 +11,8 @@
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
 
+# USB serial native module
+-keep class com.hoho.android.usbserial.** { *; }
+-keep class com.autonxt.usbreader.UsbSerialModule { *; }
+
 # Add any project specific keep options here:

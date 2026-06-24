@@ -11,6 +11,7 @@ import React, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform, Alert } from 'react-native';
 import USBSerialService, { UsbNativeDevice } from '../USBSerialService';
+import { logUsbError } from '../lib/usbError';
 
 // ── WebUSB type shim ──────────────────────────────────────────────────────────
 declare global {
@@ -22,6 +23,24 @@ declare global {
       removeEventListener(type: string, listener: (event: any) => void): void;
     };
   }
+}
+
+
+const REQUEST_PERMISSION_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -65,7 +84,7 @@ interface UsbContextType {
   baudRate: BaudRate;
   setBaudRate: (rate: BaudRate) => void;
   scanForDevices: () => Promise<void>;
-  connectDevice: (device: UsbDevice) => Promise<void>;
+  connectDevice: (device: UsbDevice, options?: { baudRate?: BaudRate }) => Promise<void>;
   quickConnect: () => Promise<void>;
   disconnectDevice: () => void;
   writeData: (hexData: string) => Promise<void>;
@@ -123,6 +142,21 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
   const selectedDeviceRef = useRef<UsbDevice | null>(null);
   useEffect(() => { selectedDeviceRef.current = selectedDevice; }, [selectedDevice]);
 
+  const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queueSavePackets = useCallback((pkts: DataPacket[]) => {
+    if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
+    saveDebounceRef.current = setTimeout(() => {
+      saveDebounceRef.current = null;
+      savePackets(pkts);
+    }, 2500);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
+    };
+  }, []);
+
   // ── Boot ────────────────────────────────────────────────────────────────────
   useEffect(() => {
     loadStoredPackets();
@@ -159,7 +193,7 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
         };
         setPackets(prev => {
           const next = [...prev, pkt].slice(-200);
-          savePackets(next);
+          queueSavePackets(next);
           return next;
         });
       });
@@ -228,7 +262,9 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
       if (Platform.OS === 'android') {
         const list = await USBSerialService.listDevices();
         if (list.length === 0) {
-          setLastError('No USB devices found. Make sure a device is connected via OTG.');
+          const msg = 'No USB devices found. Make sure a device is connected via OTG.';
+          console.warn('[USB] scan:', msg);
+          setLastError(msg);
           setDevices([]);
         } else {
           setDevices(list.map(nativeToUsbDevice));
@@ -252,8 +288,10 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
             return exists ? prev : [...prev, newDev];
           });
         } catch (e: any) {
-          if (!String(e?.message).toLowerCase().includes('no device selected'))
-            setLastError('USB access blocked. Use Chrome/Edge and allow USB permissions.');
+          if (!String(e?.message).toLowerCase().includes('no device selected')) {
+            const detail = logUsbError('scan (web)', e);
+            setLastError(detail);
+          }
           setDevices([]);
         }
       } else {
@@ -261,7 +299,7 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
         setDevices([]);
       }
     } catch (e: any) {
-      setLastError(e?.message ?? String(e));
+      setLastError(logUsbError('scan', e));
       setDevices([]);
     } finally {
       setIsScanning(false);
@@ -269,19 +307,24 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ── Connect ──────────────────────────────────────────────────────────────────
-  const connectDevice = useCallback(async (device: UsbDevice) => {
+  const connectDevice = useCallback(async (device: UsbDevice, options?: { baudRate?: BaudRate }) => {
     setIsConnecting(true);
     setLastError(null);
+    const effectiveBaud = options?.baudRate ?? baudRate;
     try {
       if (Platform.OS === 'android') {
         const nativeId = device.nativeDeviceId;
         if (nativeId == null) throw new Error('Device has no native ID. Re-scan and try again.');
 
         // 1. Request permission
-        await USBSerialService.requestPermission(nativeId);
+        await withTimeout(
+          USBSerialService.requestPermission(nativeId),
+          REQUEST_PERMISSION_TIMEOUT_MS,
+          'USB permission request timed out after 30s',
+        );
 
         // 2. Open connection using the configured baud rate
-        const connected = await USBSerialService.connect(nativeId, baudRate);
+        const connected = await USBSerialService.connect(nativeId, effectiveBaud);
 
         const connectedDevice: UsbDevice = {
           ...nativeToUsbDevice(connected),
@@ -356,7 +399,7 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
             // CP210x: IFC_ENABLE
             await webDev.controlTransferOut({ requestType: 'vendor', recipient: 'interface', request: 0x00, value: 0x0001, index: 0 });
             // Set baud rate
-            const b = baudRate;
+            const b = effectiveBaud;
             const baudBytes = new Uint8Array([b & 0xFF, (b >> 8) & 0xFF, (b >> 16) & 0xFF, (b >> 24) & 0xFF]);
             await webDev.controlTransferOut({ requestType: 'vendor', recipient: 'device', request: 0x1E, value: 0, index: 0 }, baudBytes);
             // 8N1
@@ -366,12 +409,12 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
           } else if (vid === 0x0403) {
             // FTDI: reset + set baud
             await webDev.controlTransferOut({ requestType: 'vendor', recipient: 'device', request: 0x00, value: 0x0000, index: 0 });
-            const divisor = Math.round(3000000 / baudRate);
+            const divisor = Math.round(3000000 / effectiveBaud);
             await webDev.controlTransferOut({ requestType: 'vendor', recipient: 'device', request: 0x03, value: divisor, index: 0 });
             await webDev.controlTransferOut({ requestType: 'vendor', recipient: 'device', request: 0x04, value: 0x0008, index: 0 });
           } else {
             // CDC-ACM: SET_LINE_CODING
-            const b = baudRate;
+            const b = effectiveBaud;
             const lc = new Uint8Array([b & 0xFF, (b >> 8) & 0xFF, (b >> 16) & 0xFF, (b >> 24) & 0xFF, 0, 0, 8]);
             await webDev.controlTransferOut({ requestType: 'class', recipient: 'interface', request: 0x20, value: 0, index: 0 }, lc);
             // SET_CONTROL_LINE_STATE: DTR + RTS
@@ -402,8 +445,8 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
         throw new Error('USB not supported on this platform.');
       }
     } catch (e: any) {
-      const msg = e?.message ?? String(e);
-      setLastError(msg);
+      const detail = logUsbError('connect', e);
+      setLastError(detail);
       setConnectionStatus('error');
     } finally {
       setIsConnecting(false);
@@ -414,53 +457,57 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
   const quickConnect = useCallback(async () => {
     if (connectionStatus === 'connected') return;
 
-    if (Platform.OS === 'android') {
-      try {
+    setLastError(null);
+    try {
+      if (Platform.OS === 'android') {
         const list = await USBSerialService.listDevices();
         if (list.length === 0) {
-          setLastError('No USB devices found. Connect a device via OTG cable.');
+          const msg = 'No USB devices found. Connect a device via OTG cable, then tap Connect again.';
+          console.warn('[USB] quickConnect:', msg);
+          setLastError(msg);
           return;
         }
         const first = nativeToUsbDevice(list[0]);
         setDevices(list.map(nativeToUsbDevice));
         await connectDevice(first);
-      } catch (e: any) {
-        setLastError(e?.message ?? String(e));
+        return;
       }
-      return;
-    }
 
-    if (Platform.OS === 'web' && navigator.usb) {
-      try {
-        const authorized = await navigator.usb.getDevices();
-        if (authorized.length > 0) {
-          const d = authorized[0];
+      if (Platform.OS === 'web' && navigator.usb) {
+        try {
+          const authorized = await navigator.usb.getDevices();
+          if (authorized.length > 0) {
+            const d = authorized[0];
+            const dev: UsbDevice = {
+              id: generateId(), name: d.productName || 'USB Device',
+              vendorId: d.vendorId, productId: d.productId,
+              manufacturerName: d.manufacturerName, productName: d.productName,
+              serialNumber: d.serialNumber, connected: false, platform: 'web',
+            };
+            setDevices([dev]);
+            await connectDevice(dev);
+            return;
+          }
+          const d = await navigator.usb.requestDevice({ filters: [] });
           const dev: UsbDevice = {
-            id: generateId(), name: d.productName || 'USB Device',
+            id: d.serialNumber || generateId(), name: d.productName || 'USB Device',
             vendorId: d.vendorId, productId: d.productId,
             manufacturerName: d.manufacturerName, productName: d.productName,
             serialNumber: d.serialNumber, connected: false, platform: 'web',
           };
           setDevices([dev]);
           await connectDevice(dev);
-          return;
+        } catch (e) {
+          setLastError(logUsbError('quickConnect (web)', e));
         }
-        const d = await navigator.usb.requestDevice({ filters: [] });
-        const dev: UsbDevice = {
-          id: d.serialNumber || generateId(), name: d.productName || 'USB Device',
-          vendorId: d.vendorId, productId: d.productId,
-          manufacturerName: d.manufacturerName, productName: d.productName,
-          serialNumber: d.serialNumber, connected: false, platform: 'web',
-        };
-        setDevices([dev]);
-        await connectDevice(dev);
-      } catch {
-        setLastError('USB access denied or no device selected.');
+        return;
       }
-      return;
-    }
 
-    setLastError('USB not supported on this platform.');
+      setLastError('USB not supported on this platform.');
+    } catch (e: any) {
+      setLastError(logUsbError('quickConnect', e));
+      setConnectionStatus('error');
+    }
   }, [connectionStatus, connectDevice]);
 
   // ── Disconnect ───────────────────────────────────────────────────────────────
@@ -507,10 +554,10 @@ export function UsbProvider({ children }: { children: React.ReactNode }) {
     };
     setPackets(prev => {
       const next = [...prev, txPkt].slice(-200);
-      savePackets(next);
+      queueSavePackets(next);
       return next;
     });
-  }, []);
+  }, [queueSavePackets]);
 
   // ── WebUSB read loop ─────────────────────────────────────────────────────────
   async function runWebUsbReadLoop(device: UsbDevice) {

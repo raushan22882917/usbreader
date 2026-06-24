@@ -89,7 +89,8 @@ export function AppHeader({ title, icon = "circle-small", iconColor = C.muted, r
             : "rgba(255,80,60,0.35)",
         }]}
         onPress={handleUsbPress}
-        disabled={isConnecting || isScanning}
+        disabled={isScanning}
+        hitSlop={8}
       >
         {(isConnecting || isScanning) ? (
           <ActivityIndicator size="small" color={C.yellow} />

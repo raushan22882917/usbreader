@@ -3,7 +3,10 @@
  *
  *   Android → {"cmd":"csv"}
  *   ESP32   → {"status":"ok","mode":"csvlog","record_size":18,"fmt":"b64bin"}
- *   ESP32   → {"log":"<base64>"}  every ~100ms until another cmd
+ *   ESP32   → {"log":"<base64>"}  every ~100ms while csvlog mode is active
+ *
+ * Android buffers CSV rows in memory during the session.
+ * Tap Download CSV to export all captured rows so far.
  *
  * Record layout (little-endian, record_size=18):
  *   [0..3]   time_ms since session start
@@ -119,14 +122,22 @@ function resolveDlcAndFlags(rec: Uint8Array): { dlc: number; flags: number } {
   return { dlc: Math.min(8, b9), flags: b8 };
 }
 
-export function parseCanLogBytes(
+export interface CanLogFrame {
+  timeMs: number;
+  id: number;
+  extended: boolean;
+  remote: boolean;
+  direction: "Rx" | "Tx";
+  dlc: number;
+  data: Uint8Array;
+}
+
+export function parseCanLogFrames(
   bytes: Uint8Array,
   recordSize: number,
-  startIndex: number,
-): { rows: CanLogRow[]; nextIndex: number } {
-  const rows: CanLogRow[] = [];
+): CanLogFrame[] {
+  const frames: CanLogFrame[] = [];
   const n = Math.floor(bytes.length / recordSize);
-  let idx = startIndex;
 
   for (let i = 0; i < n; i++) {
     const off = i * recordSize;
@@ -144,16 +155,31 @@ export function parseCanLogBytes(
     const padded = new Uint8Array(8);
     padded.set(data.subarray(0, 8));
 
+    frames.push({ timeMs, id, extended, remote, direction, dlc, data: padded });
+  }
+
+  return frames;
+}
+
+export function parseCanLogBytes(
+  bytes: Uint8Array,
+  recordSize: number,
+  startIndex: number,
+): { rows: CanLogRow[]; nextIndex: number } {
+  const rows: CanLogRow[] = [];
+  let idx = startIndex;
+
+  for (const frame of parseCanLogFrames(bytes, recordSize)) {
     rows.push({
       index: idx++,
-      direction,
-      timeMs,
+      direction: frame.direction,
+      timeMs: frame.timeMs,
       alias: "",
-      idHex: formatCanId(id, extended),
-      format: remote ? "Remote" : "Data",
-      type: extended ? "Extend" : "Standard",
-      length: dlc > 0 ? dlc : 8,
-      dataHex: formatDataHex8(padded),
+      idHex: formatCanId(frame.id, frame.extended),
+      format: frame.remote ? "Remote" : "Data",
+      type: frame.extended ? "Extend" : "Standard",
+      length: frame.dlc > 0 ? frame.dlc : 8,
+      dataHex: formatDataHex8(frame.data),
     });
   }
 

@@ -1,7 +1,11 @@
 import { useMemo, useEffect, useState } from "react";
 import { DataPacket } from "@/context/UsbContext";
 import { extractJsonObjects } from "@/lib/diagnosisTelemetry";
-import { coerceBytesToDecimal, coerceNumArray } from "@/lib/diagnosisCanDecode";
+import {
+  coerceBytesToDecimal,
+  coerceNumArray,
+  DiagnosisDecodeState,
+} from "@/lib/diagnosisCanDecode";
 
 export interface ParsedUsbData {
   dataRateKbps: number;
@@ -362,6 +366,176 @@ export function parsedFromTelemetryJson(data: Record<string, unknown>): ParsedUs
   const r = { ...PARSED_USB_DEFAULTS };
   applyJson(r, data);
   return r;
+}
+
+/** Map CAN-decode state (from csvlog frames) into UI display values. */
+export function parsedFromDiagnosisDecodeState(
+  state: DiagnosisDecodeState,
+  timestamp: number,
+): ParsedUsbData {
+  const r = { ...PARSED_USB_DEFAULTS };
+  r.soc = state.soc;
+  r.packVoltageV = state.packVoltageV;
+  r.packCurrentA = state.packCurrentA;
+  r.packTempC = state.packTempC;
+  r.minV = state.minV;
+  r.maxV = state.maxV;
+  r.minCellId = state.minCellId;
+  r.maxCellId = state.maxCellId;
+  r.totalCells = state.totalCells;
+  r.cellVoltages = [...state.cellV];
+  r.cellTemperatures = [...state.cellT];
+  r.cycle = state.cycle;
+  r.batPlusV = state.batPlusV;
+  r.fcV = state.fcV;
+  r.dcdcHV = state.dcdcHV;
+  r.dsgV = state.dsgV;
+  r.scV = state.scV;
+  r.pchgV = state.pchgV;
+  r.relayDSG = state.relayDsg;
+  r.relayPCHG = state.relayPchg;
+  r.relayFC = state.relayFc;
+  r.relaySC = state.relaySc;
+  r.relayDCDC = state.relayDcdc;
+  r.relayOUT = state.relayOut;
+  r.relayNEG_ENB = state.relayNegEnb;
+  r.relayPOS_ENB = state.relayPosEnb;
+  r.motorRpm = state.rpm;
+  r.motorTempC = state.motorTempC;
+  r.motorRuntime = state.motorRuntime;
+  r.motorLoadPct =
+    state.rpm > 0 ? Math.min(Math.round((state.rpm / 3000) * 100), 100) : 0;
+  r.dcdcVoltV = state.dcdcVoltV;
+  r.dcdcCurrentA = state.dcdcCurrentA;
+  r.dcdcTempC = state.dcdcTempC;
+  r.dcdcReady = state.dcdcReady;
+  r.dcdcWorking = state.dcdcWorking;
+  r.dcdcHvilErr = state.dcdcHvilErr;
+  r.dcdcOverTemp = state.dcdcOverTemp;
+  r.dcdc2VoltV = state.dcdc2VoltageV;
+  r.dcdc2CurrentA = state.dcdc2CurrentA;
+  r.dcdc2TempC = state.dcdc2TempC;
+  r.dcdc2WorkState = state.dcdc2WorkState;
+  r.dcdc2FaultLevel = state.dcdc2FaultLevel;
+  r.dcdc2SysState = state.dcdc2SysState;
+  r.dcdc2ErrFlags = state.dcdc2ErrFlags;
+  r.dcdc2Version = state.dcdc2Version;
+  r.dcdc2CmdMode = state.dcdc2CmdMode;
+  r.dcdc2CmdVset = state.dcdc2CmdVset;
+  r.dcdc2CmdIset = state.dcdc2CmdIset;
+  r.dcdc2CmdReset = state.dcdc2CmdReset;
+  r.chrgrStatus = state.chargerStatus;
+  r.chrgrVoltV = state.chargerVoltageV;
+  r.chrgrCurrentA = state.chargerCurrentA;
+  r.chrgrErrorCode = state.chargerErrorCode;
+  r.evccLastMsgCode = state.evccLastMsgCode;
+  r.evccLastCanId = state.evccLastCanId;
+  r.evccDescription = state.evccDescription;
+  r.faultUV = state.faultUv;
+  r.faultOV = state.faultOv;
+  r.faultOTC = state.faultOtc;
+  r.faultUTC = state.faultUtc;
+  r.faultOCD1 = state.faultOcd1;
+  r.faultOCD2 = state.faultOcd2;
+  r.faultSC = state.faultSc;
+  r.faultISO = state.faultIso;
+  r.timestamp = timestamp;
+  return r;
+}
+
+/** Synthetic diagnosis JSON for validation/logging from CAN decode state. */
+export function telemetryJsonFromDecodeState(
+  state: DiagnosisDecodeState,
+  ts: number,
+): Record<string, unknown> {
+  return {
+    bms: {
+      soc: state.soc,
+      pack_voltage_v: state.packVoltageV,
+      pack_current_a: state.packCurrentA,
+      pack_temp_c: state.packTempC,
+      faults: {
+        UV: state.faultUv,
+        OV: state.faultOv,
+        OTC: state.faultOtc,
+        UTC: state.faultUtc,
+        OCD1: state.faultOcd1,
+        OCD2: state.faultOcd2,
+        SC: state.faultSc,
+        ISO: state.faultIso,
+      },
+    },
+    cells: {
+      total_cells: state.totalCells,
+      cycle: state.cycle,
+      min_v: state.minV,
+      max_v: state.maxV,
+      min_cell_id: state.minCellId,
+      max_cell_id: state.maxCellId,
+      voltages: [...state.cellV],
+      temperatures: [...state.cellT],
+    },
+    hv: {
+      bat_plus_v: state.batPlusV,
+      fc_v: state.fcV,
+      dcdc_v: state.dcdcHV,
+      dsg_v: state.dsgV,
+      sc_v: state.scV,
+      pchg_v: state.pchgV,
+    },
+    relays: {
+      "DSG+": state.relayDsg,
+      "PCHG+": state.relayPchg,
+      "FC+": state.relayFc,
+      "SC+": state.relaySc,
+      "DC-DC+": state.relayDcdc,
+      "OUT-": state.relayOut,
+      "NEG_ENB": state.relayNegEnb,
+      "POS_ENB": state.relayPosEnb,
+    },
+    dcdc: {
+      voltage_v: state.dcdcVoltV,
+      current_a: state.dcdcCurrentA,
+      temp_c: state.dcdcTempC,
+      ready: state.dcdcReady,
+      working: state.dcdcWorking,
+      hvil_err: state.dcdcHvilErr,
+      over_temperature: state.dcdcOverTemp,
+    },
+    dcdc2: {
+      voltage_v: state.dcdc2VoltageV,
+      current_a: state.dcdc2CurrentA,
+      temp_c: state.dcdc2TempC,
+      work_state: state.dcdc2WorkState,
+      fault_level: state.dcdc2FaultLevel,
+      sys_state: state.dcdc2SysState,
+      err_flags: state.dcdc2ErrFlags,
+      version: state.dcdc2Version,
+      cmd: {
+        mode: state.dcdc2CmdMode,
+        v_set: state.dcdc2CmdVset,
+        i_set: state.dcdc2CmdIset,
+        reset: state.dcdc2CmdReset,
+      },
+    },
+    charger: {
+      status: state.chargerStatus,
+      voltage_v: state.chargerVoltageV,
+      current_a: state.chargerCurrentA,
+      error_code: state.chargerErrorCode,
+    },
+    motor: {
+      rpm: state.rpm,
+      temp_c: state.motorTempC,
+      runtime: state.motorRuntime,
+    },
+    evcc: {
+      last_msg_code: state.evccLastMsgCode,
+      last_can_id: state.evccLastCanId,
+      description: state.evccDescription,
+    },
+    ts,
+  };
 }
 
 export function useParsedUsbData(

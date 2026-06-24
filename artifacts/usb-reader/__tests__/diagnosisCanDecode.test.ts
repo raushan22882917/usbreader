@@ -22,6 +22,20 @@ describe("diagnosisCanDecode", () => {
     expect(state.packCurrentA).toBeCloseTo(5.0);
   });
 
+  it("parses motor SDO responses on 0x581", () => {
+    const state = { ...DIAGNOSIS_DECODE_DEFAULTS, cellV: [...DIAGNOSIS_DECODE_DEFAULTS.cellV], cellT: [...DIAGNOSIS_DECODE_DEFAULTS.cellT] };
+    const rpmData = new Uint8Array([0x4b, 0x21, 0x20, 0x06, 0x10, 0x27, 0, 0]);
+    parseDiagnosisCanFrame(state, 0x581, false, 6, rpmData);
+    expect(state.rpm).toBe(0x2710);
+
+    const tempData = new Uint8Array([0x43, 0x23, 0x20, 0x1e, 0x2c, 0x01, 0, 0]);
+    parseDiagnosisCanFrame(state, 0x581, false, 6, tempData);
+    expect(state.motorTempC).toBeCloseTo(30.0);
+
+    const rtData = new Uint8Array([0x4b, 0x21, 0x20, 0x19, 0x10, 0x27, 0, 0]);
+    parseDiagnosisCanFrame(state, 0x581, false, 6, rtData);
+    expect(state.motorRuntime).toBe(0x2710);
+  });
   it("parses dcdc2 status frame", () => {
     const state = { ...DIAGNOSIS_DECODE_DEFAULTS, cellV: [...DIAGNOSIS_DECODE_DEFAULTS.cellV], cellT: [...DIAGNOSIS_DECODE_DEFAULTS.cellT] };
     const data = new Uint8Array([0x0a, 0x50, 0x64, 0x00, 0x32, 0x00, 0x03, 0x07]);

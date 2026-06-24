@@ -23,6 +23,42 @@ export function isDiagnosisTelemetry(obj: unknown): obj is Record<string, unknow
   return !!obj && typeof obj === "object" && !Array.isArray(obj) && (obj as Record<string, unknown>).bms != null;
 }
 
+/** ESP32 ack after {"cmd":"diagnosis"} — main.cpp or firmware variants. */
+export function isDiagnosisAck(obj: Record<string, unknown>): boolean {
+  if (obj.status === "diagnosis") return true;
+  return obj.status === "ok" && obj.mode === "diagnosis";
+}
+
+const LINE_BUF_MAX = 8192;
+
+/**
+ * Incremental newline-delimited JSON parser (ESP32 prints one JSON object per line).
+ * Much cheaper than re-scanning the full RX buffer on every USB chunk.
+ */
+export function ingestJsonLines(
+  buffer: string,
+  chunk: string,
+): { buffer: string; objects: Record<string, unknown>[] } {
+  const combined = buffer + chunk;
+  const lines = combined.split("\n");
+  let remainder = lines.pop() ?? "";
+  if (remainder.length > LINE_BUF_MAX) {
+    remainder = remainder.slice(-LINE_BUF_MAX);
+  }
+
+  const objects: Record<string, unknown>[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || t[0] !== "{") continue;
+    try {
+      objects.push(JSON.parse(t) as Record<string, unknown>);
+    } catch {
+      // skip malformed / partial line
+    }
+  }
+  return { buffer: remainder, objects };
+}
+
 /** Extract complete JSON objects from a raw RX stream (may span USB packets). */
 export function extractJsonObjects(raw: string): Record<string, unknown>[] {
   const results: Record<string, unknown>[] = [];

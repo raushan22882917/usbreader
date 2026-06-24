@@ -9,6 +9,7 @@ import {
   StyleSheet,
   useWindowDimensions,
 } from "react-native";
+import { usePathname } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb } from "@/context/UsbContext";
@@ -17,19 +18,14 @@ import { useDeviceScale } from "@/hooks/useDeviceScale";
 import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
 import { UsbConnectionBar } from "@/components/UsbConnectionBar";
-import USBSerialService from "@/USBSerialService";
+import { sendCsvCmd as sendCsvCmdLine } from "@/lib/usbCdc";
 import {
-  extractJsonObjects,
-  findLatestDiagnosisTelemetry,
-  isDiagnosisTelemetry,
   validateDiagnosisTelemetry,
 } from "@/lib/diagnosisTelemetry";
 
 import { Colors, Typography, Spacing, Border } from "@/theme";
 
-const CDC_RX_LINE_MAX = 20480;
-const TIMEOUT_TELEMETRY_MS = 15000;
-const DIAG_LOG_MAX = 200;
+const DIAG_LOG_MAX = 48;
 
 function summarizeTelemetryRx(t: Record<string, unknown>): string {
   const bms = t.bms as Record<string, unknown> | undefined;
@@ -38,14 +34,6 @@ function summarizeTelemetryRx(t: Record<string, unknown>): string {
     `ts=${ts} soc=${bms?.soc ?? "?"}% ` +
     `V=${bms?.pack_voltage_v ?? "?"} I=${bms?.pack_current_a ?? "?"}A`
   );
-}
-
-function strToHex(str: string): string {
-  let hex = "";
-  for (let i = 0; i < str.length; i++) {
-    hex += str.charCodeAt(i).toString(16).padStart(2, "0");
-  }
-  return hex;
 }
 
 type DiagRunStatus = "idle" | "running" | "ok" | "error";
@@ -105,6 +93,16 @@ function tempColor(t: number, warn = 50, err = 70) {
 function fmtUptime(s: number) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
   return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${ss}s` : `${ss}s`;
+}
+
+/** Cumulative motor runtime from CAN (seconds) — matches main.cpp motor.runtime. */
+function fmtMotorRuntime(sec: number): string {
+  if (!Number.isFinite(sec)) return "—";
+  return String(sec);
+}
+
+function hasLiveMotor(isConnected: boolean, timestamp: number): boolean {
+  return isConnected && timestamp > 0;
 }
 
 function fmtRelay(v: boolean) {
@@ -193,7 +191,9 @@ export default function DiagnosticsScreen() {
 
   const { connectionStatus, quickConnect, writeData } = useUsb();
   const isConnected = connectionStatus === "connected";
-  const { p, packetsRef, resetTs, resetTelemetry } = useDiagnosisTelemetryData(isConnected);
+  const isFocused = usePathname().includes("diagnostics");
+  const { p, rawTelemetry, csvLogAck, resetTs, resetTelemetry } =
+    useDiagnosisTelemetryData(isConnected);
 
   const connectionRef = useRef(connectionStatus);
   useEffect(() => {
@@ -208,88 +208,166 @@ export default function DiagnosticsScreen() {
   const [diagMsg, setDiagMsg] = useState("");
   const [diagLog, setDiagLog] = useState<string[]>([]);
   const [logModalVisible, setLogModalVisible] = useState(false);
-  const abortRef = useRef(false);
-  const runningRef = useRef(false);
+  /** Like main.cpp `csvLogMode` — ESP32 streams CAN log while active. */
+  const csvModeRef = useRef(false);
   const lastLoggedTsRef = useRef(-1);
+  const firstFrameValidatedRef = useRef(false);
+  const ackLoggedRef = useRef(false);
   const connectAtRef = useRef<number | null>(null);
   const autoRequestedRef = useRef(false);
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
 
   const log = useCallback((msg: string) => {
     setDiagLog((prev) => [...prev.slice(-(DIAG_LOG_MAX - 1)), msg]);
   }, []);
 
-  const sendDiagnosisCmd = useCallback(async () => {
-    if (connectionRef.current !== "connected") return;
-    const line = JSON.stringify({ cmd: "diagnosis" }) + "\n";
-    const hex = strToHex(line);
-    const chunkHex = 512;
-    for (let i = 0; i < hex.length; i += chunkHex) {
-      await writeData(hex.slice(i, i + chunkHex));
-      if (i + chunkHex < hex.length) await new Promise((r) => setTimeout(r, 1));
-    }
+  const sendCsvCmd = useCallback(async () => {
+    await sendCsvCmdLine(writeData, connectionRef.current === "connected");
   }, [writeData]);
 
-  // Auto mode: if telemetry is already streaming, show it immediately.
-  // If not streaming yet, send {"cmd":"diagnosis"} once after connect.
+  // On disconnect: reset csv session state.
   useEffect(() => {
     if (!isConnected) {
       connectAtRef.current = null;
       autoRequestedRef.current = false;
+      csvModeRef.current = false;
+      firstFrameValidatedRef.current = false;
+      ackLoggedRef.current = false;
+      lastLoggedTsRef.current = -1;
+      resetTs();
+      setDiagStatus("idle");
+      setDiagMsg("Disconnected");
       return;
     }
     connectAtRef.current = Date.now();
     autoRequestedRef.current = false;
     setDiagStatus("idle");
-    setDiagMsg('Auto: waiting for data… (will send {"cmd":"diagnosis"} if needed)');
-  }, [isConnected]);
+    setDiagMsg('Waiting for live data… will send {"cmd":"csv"} when connected');
+  }, [isConnected, resetTs]);
 
+  // Show live telemetry if already streaming.
   useEffect(() => {
-    if (!isConnected || runningRef.current) return;
+    if (!isConnected || !isFocused || csvModeRef.current) return;
+    if (p.timestamp <= 0) return;
+    csvModeRef.current = true;
+    setDiagStatus("ok");
+    setDiagMsg(`Live data — ts ${p.timestamp}`);
+  }, [isConnected, isFocused, p.timestamp]);
 
-    // If data is already present, just mark live.
-    if (p.timestamp > 0) {
-      if (diagStatus !== "ok") setDiagStatus("ok");
-      setDiagMsg(`Live data — ts ${p.timestamp}`);
-      return;
-    }
+  const startCsvLog = useCallback(
+    async (source: "auto" | "manual" = "manual") => {
+      if (sendingRef.current) return;
 
-    // No telemetry yet: auto-send once after a short grace period.
-    if (autoRequestedRef.current) return;
+      const isUsbConnected = () => connectionRef.current === "connected";
+
+      const requireUsb = async () => {
+        if (isUsbConnected()) return;
+        await quickConnect();
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          if (isUsbConnected()) return;
+        }
+        throw new Error("USB not connected — connect the ESP32 using the connection bar.");
+      };
+
+      try {
+        await requireUsb();
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        log(`✗ ${msg}`);
+        setDiagStatus("error");
+        setDiagMsg(msg);
+        return;
+      }
+
+      const restarting = csvModeRef.current;
+      csvModeRef.current = true;
+      setDiagStatus("running");
+
+      if (!restarting) {
+        if (source === "manual") {
+          resetTelemetry();
+          setDiagLog([]);
+        }
+        firstFrameValidatedRef.current = false;
+        ackLoggedRef.current = false;
+        lastLoggedTsRef.current = -1;
+        log(">> CSV log started");
+      } else {
+        ackLoggedRef.current = false;
+      }
+
+      const tag = source === "auto" ? " (auto)" : restarting ? " (restart)" : "";
+      log(`→ {"cmd":"csv"}${tag}`);
+      setDiagMsg(`→ {"cmd":"csv"}${tag}`);
+
+      setSending(true);
+      sendingRef.current = true;
+      try {
+        await sendCsvCmd();
+        setDiagMsg("Listening for CAN csvlog stream…");
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+    },
+    [quickConnect, sendCsvCmd, log, resetTelemetry],
+  );
+
+  // Auto-send csv when this tab is focused and USB is connected.
+  useEffect(() => {
+    if (!isConnected || !isFocused || autoRequestedRef.current || csvModeRef.current) return;
     const t0 = connectAtRef.current ?? Date.now();
-    const waitMs = 900;
+    const waitMs = 800;
     const remaining = waitMs - (Date.now() - t0);
     const id = setTimeout(() => {
-      if (!isConnected || runningRef.current) return;
-      if (p.timestamp > 0) return;
+      if (!isConnected || !isFocused || autoRequestedRef.current || csvModeRef.current) return;
       autoRequestedRef.current = true;
-      log('→ {"cmd":"diagnosis"} (auto)');
-      setDiagMsg('→ {"cmd":"diagnosis"} (auto)');
-      sendDiagnosisCmd().catch((e: unknown) => {
+      startCsvLog("auto").catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
         log(`✗ auto send failed: ${msg}`);
+        setDiagStatus("error");
+        setDiagMsg(msg);
       });
     }, Math.max(0, remaining));
     return () => clearTimeout(id);
-  }, [isConnected, p.timestamp, diagStatus, log, sendDiagnosisCmd]);
+  }, [isConnected, isFocused, startCsvLog, log]);
 
-  // Log only when BMS sends a new telemetry frame (new `ts`), not on every USB packet.
+  // Log csvlog ack once.
   useEffect(() => {
-    if (!isConnected || runningRef.current || p.timestamp <= 0) return;
-    const ts = p.timestamp;
-    if (ts === lastLoggedTsRef.current) return;
-    lastLoggedTsRef.current = ts;
-    const latest = findLatestDiagnosisTelemetry(packetsRef.current);
-    if (!latest) return;
-    const check = validateDiagnosisTelemetry(latest);
-    log(`← ${summarizeTelemetryRx(latest)} · format ${check.ok ? "OK" : "BAD"}`);
-  }, [p.timestamp, isConnected, log, packetsRef]);
+    if (!csvLogAck || ackLoggedRef.current) return;
+    ackLoggedRef.current = true;
+    log("← csvlog ack");
+    setDiagStatus("ok");
+  }, [csvLogAck, log]);
 
+  // First telemetry frame: validate once and log a single summary line.
   useEffect(() => {
-    if (!isConnected) {
-      lastLoggedTsRef.current = -1;
-      resetTs();
+    if (!isConnected || !csvModeRef.current || p.timestamp <= 0) return;
+    if (firstFrameValidatedRef.current || !rawTelemetry) return;
+    firstFrameValidatedRef.current = true;
+
+    const check = validateDiagnosisTelemetry(rawTelemetry);
+    if (check.ok) {
+      log(`✓ ${summarizeTelemetryRx(rawTelemetry)}`);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } else {
+      log(`⚠ format issues (${check.errors.length}) — ${summarizeTelemetryRx(rawTelemetry)}`);
     }
-  }, [isConnected, resetTs]);
+    setDiagStatus("ok");
+    setDiagMsg(`Live — ts ${p.timestamp}, SOC ${fmtInt(p.soc)}%`);
+    lastLoggedTsRef.current = p.timestamp;
+  }, [isConnected, p.timestamp, p.soc, rawTelemetry, log]);
+
+  // Live status line — update at most once per new `ts`.
+  useEffect(() => {
+    if (!isConnected || !csvModeRef.current || p.timestamp <= 0) return;
+    if (p.timestamp === lastLoggedTsRef.current) return;
+    lastLoggedTsRef.current = p.timestamp;
+    setDiagStatus("ok");
+    setDiagMsg(`Live — ts ${p.timestamp}, SOC ${fmtInt(p.soc)}%`);
+  }, [isConnected, p.timestamp, p.soc]);
 
   const toggle = (tab: Tab) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -298,155 +376,6 @@ export default function DiagnosticsScreen() {
 
   const isOn = subsystemOn[activeTab];
   const ac   = TABS.find((t) => t.id === activeTab)!;
-
-  const runDiagnosis = useCallback(async () => {
-    if (runningRef.current) return;
-
-    const isUsbConnected = () => connectionRef.current === "connected";
-
-    const requireUsb = async () => {
-      if (isUsbConnected()) return;
-      await quickConnect();
-      for (let i = 0; i < 40; i++) {
-        await new Promise((r) => setTimeout(r, 100));
-        if (isUsbConnected()) return;
-      }
-      throw new Error("USB not connected — connect the ESP32 using the connection bar.");
-    };
-
-    abortRef.current = false;
-    runningRef.current = true;
-    setDiagStatus("running");
-    setDiagLog([]);
-    lastLoggedTsRef.current = -1;
-    // Start each run from a clean RX buffer so old telemetry is never reused.
-    resetTelemetry();
-    log(">> Diagnosis started");
-    setDiagMsg('→ {"cmd":"diagnosis"}');
-
-    const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-    const sendCdcLine = async (obj: Record<string, unknown>) => {
-      if (!isUsbConnected()) throw new Error("USB disconnected");
-      const line = JSON.stringify(obj) + "\n";
-      if (line.length > CDC_RX_LINE_MAX) {
-        throw new Error(`CDC line too long (${line.length} B)`);
-      }
-      log(`→ ${line.trim()} (${line.length} B)`);
-      setDiagMsg(`→ ${line.trim()}`);
-      const hex = strToHex(line);
-      const chunkHex = 512;
-      for (let i = 0; i < hex.length; i += chunkHex) {
-        await writeData(hex.slice(i, i + chunkHex));
-        if (i + chunkHex < hex.length) await delay(1);
-      }
-      await delay(Math.max(8, Math.ceil(line.length / 120)));
-    };
-
-    let sessionRxText = "";
-
-    let lastSessionTs = -1;
-
-    const appendSessionRx = (text: string) => {
-      sessionRxText += text;
-      if (sessionRxText.length > CDC_RX_LINE_MAX) {
-        sessionRxText = sessionRxText.slice(-CDC_RX_LINE_MAX);
-      }
-      const objs = extractJsonObjects(sessionRxText);
-      for (let i = objs.length - 1; i >= 0; i--) {
-        if (!isDiagnosisTelemetry(objs[i])) continue;
-        const ts = objs[i].ts as number;
-        if (ts !== lastSessionTs) {
-          lastSessionTs = ts;
-          log(`← ${summarizeTelemetryRx(objs[i])}`);
-        }
-        break;
-      }
-    };
-
-    const findTelemetry = (): Record<string, unknown> | null => {
-      const fromPackets = findLatestDiagnosisTelemetry(packetsRef.current);
-      if (fromPackets) return fromPackets;
-      const objs = extractJsonObjects(sessionRxText);
-      for (let i = objs.length - 1; i >= 0; i--) {
-        if (isDiagnosisTelemetry(objs[i])) return objs[i];
-      }
-      return null;
-    };
-
-    const onSessionCdcHex = (hexData: string) => {
-      if (abortRef.current) return;
-      let chunk = "";
-      for (let i = 0; i < hexData.length; i += 2) {
-        chunk += String.fromCharCode(parseInt(hexData.substring(i, i + 2), 16));
-      }
-      appendSessionRx(chunk);
-    };
-
-    const sessionUnsub = USBSerialService.onData(onSessionCdcHex);
-
-    try {
-      log("Connecting USB…");
-      await requireUsb();
-      log("✓ USB connected");
-
-      log("Listening for BMS JSON (bms, cells, hv, relays, …)…");
-      await sendCdcLine({ cmd: "diagnosis" });
-      setDiagMsg("Listening for BMS JSON stream…");
-
-      const deadline = Date.now() + TIMEOUT_TELEMETRY_MS;
-      let telemetry: Record<string, unknown> | null = null;
-      let waitTicks = 0;
-      while (Date.now() < deadline) {
-        if (abortRef.current) throw new Error("Aborted");
-        telemetry = findTelemetry();
-        if (telemetry) break;
-        waitTicks++;
-        if (waitTicks % 50 === 0) {
-          log(`   … waiting (${Math.round((deadline - Date.now()) / 1000)}s left)`);
-        }
-        await delay(100);
-      }
-
-      if (!telemetry) {
-        log(`✗ No diagnosis JSON (${TIMEOUT_TELEMETRY_MS / 1000}s timeout)`);
-        throw new Error(`No diagnosis JSON received (${TIMEOUT_TELEMETRY_MS / 1000}s)`);
-      }
-
-      log(`   Got telemetry: ${summarizeTelemetryRx(telemetry)}`);
-      const check = validateDiagnosisTelemetry(telemetry);
-      if (!check.ok) {
-        log(`✗ Format mismatch (${check.errors.length} issues)`);
-        for (const err of check.errors.slice(0, 8)) log(`   · ${err}`);
-        if (check.errors.length > 8) log(`   · … +${check.errors.length - 8} more`);
-        const detail = check.errors.slice(0, 4).join("; ");
-        const more = check.errors.length > 4 ? ` (+${check.errors.length - 4} more)` : "";
-        throw new Error(`Format mismatch: ${detail}${more}`);
-      }
-
-      const bms = telemetry.bms as Record<string, unknown>;
-      const ts = telemetry.ts as number;
-      log("✓ Format matches expected diagnosis schema");
-      log(`   bms.soc=${bms.soc}% pack=${bms.pack_voltage_v}V`);
-      log(`   cells: ${(telemetry.cells as Record<string, unknown>)?.total_cells ?? "?"} cells`);
-      log(`   evcc: ${(telemetry.evcc as Record<string, unknown>)?.last_msg_code ?? "?"}`);
-      setDiagStatus("ok");
-      setDiagMsg(
-        `✓ Format matches — ts ${ts}, SOC ${typeof bms.soc === "number" ? (bms.soc as number).toFixed(1) : "?"}%`,
-      );
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      log(`✗ ${msg}`);
-      setDiagStatus("error");
-      setDiagMsg(msg);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-    } finally {
-      sessionUnsub();
-      runningRef.current = false;
-      log(">> Diagnosis ended");
-    }
-  }, [quickConnect, writeData, log, resetTelemetry]);
 
   const diagStatusColor =
     diagStatus === "ok" ? C.green :
@@ -461,7 +390,9 @@ export default function DiagnosticsScreen() {
         : "Connect USB for live diagnostics"
       : diagStatus === "running"
         ? diagMsg
-        : diagMsg || (diagStatus === "ok" ? "Ready" : "Failed");
+        : diagStatus === "ok"
+          ? diagMsg || "Live — continuous csvlog stream"
+          : diagMsg || "Failed";
 
   const openLog = useCallback(() => {
     Haptics.selectionAsync();
@@ -486,22 +417,31 @@ export default function DiagnosticsScreen() {
       <Pressable
         style={({ pressed }) => [
           ha.runBtn,
-          (!isConnected || diagStatus === "running") && ha.runBtnDisabled,
-          pressed && isConnected && diagStatus !== "running" && ha.pressed,
+          !isConnected && ha.runBtnDisabled,
+          pressed && isConnected && ha.pressed,
         ]}
-        disabled={!isConnected || diagStatus === "running"}
+        disabled={!isConnected || sending}
         onPress={() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          runDiagnosis();
+          startCsvLog("manual").catch((e: unknown) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            log(`✗ ${msg}`);
+            setDiagStatus("error");
+            setDiagMsg(msg);
+          });
         }}
-        accessibilityLabel="Run diagnosis"
+        accessibilityLabel="Start CSV log"
       >
-        {diagStatus === "running" ? (
+        {sending || (diagStatus === "running" && p.timestamp <= 0) ? (
           <ActivityIndicator size="small" color={Colors.onPrimary} />
         ) : (
           <>
-            <MaterialCommunityIcons name="play-circle-outline" size={iconSm} color={Colors.onPrimary} />
-            <Text style={ha.runBtnTxt}>RUN</Text>
+            <MaterialCommunityIcons
+              name={diagStatus === "ok" ? "refresh" : "play-circle-outline"}
+              size={iconSm}
+              color={Colors.onPrimary}
+            />
+            <Text style={ha.runBtnTxt}>{diagStatus === "ok" ? "RESTART" : "RUN"}</Text>
           </>
         )}
       </Pressable>
@@ -551,8 +491,8 @@ export default function DiagnosticsScreen() {
                   "rgba(80,180,255,0.3)",
               }]}>
                 <Text style={[dl.modalBadgeTxt, { color: diagStatusColor }]}>
-                  {diagStatus === "running" ? "● RUNNING" :
-                   diagStatus === "ok" ? "✓ OK" :
+                  {diagStatus === "running" ? "● LISTENING" :
+                   diagStatus === "ok" ? "● LIVE" :
                    diagStatus === "error" ? "✗ ERROR" : "IDLE"}
                 </Text>
               </View>
@@ -867,31 +807,39 @@ export default function DiagnosticsScreen() {
               <View style={s.motorSection}>
                 <View style={s.motorHeader}>
                   <Text style={s.motorLabel}>MOTOR RPM</Text>
-                  <Text style={s.motorValue}>{showInt(isConnected, p.motorRpm)}</Text>
+                  <Text style={s.motorValue}>
+                    {hasLiveMotor(isConnected, p.timestamp) ? fmtInt(p.motorRpm) : "—"}
+                  </Text>
                 </View>
                 <View style={s.progressBar}>
-                  <View style={[s.progressFill, { width: isConnected ? `${Math.min((p.motorRpm / 3000) * 100, 100)}%` : "0%" }]} />
+                  <View style={[s.progressFill, { width: hasLiveMotor(isConnected, p.timestamp) ? `${Math.min((p.motorRpm / 3000) * 100, 100)}%` : "0%" }]} />
                 </View>
               </View>
               <View style={s.motorSection}>
                 <View style={s.motorHeader}>
                   <Text style={s.motorLabel}>MOTOR TEMP</Text>
-                  <Text style={[s.motorValue, { color: "#58e5c2" }]}>{showNum(isConnected, p.motorTempC, " °C")}</Text>
+                  <Text style={[s.motorValue, { color: "#58e5c2" }]}>
+                    {hasLiveMotor(isConnected, p.timestamp) ? `${fmtN(p.motorTempC)} °C` : "—"}
+                  </Text>
                 </View>
                 <View style={s.progressBar}>
-                  <View style={[s.progressFill, { backgroundColor: "#58e5c2", width: isConnected ? `${Math.min((p.motorTempC / 80) * 100, 100)}%` : "0%" }]} />
+                  <View style={[s.progressFill, { backgroundColor: "#58e5c2", width: hasLiveMotor(isConnected, p.timestamp) ? `${Math.min((p.motorTempC / 80) * 100, 100)}%` : "0%" }]} />
                 </View>
               </View>
               <View style={s.motorSection}>
                 <View style={s.motorHeader}>
                   <Text style={s.motorLabel}>MOTOR RUNTIME</Text>
-                  <Text style={s.motorValue}>{isConnected ? fmtUptime(p.motorRuntime) : "—"}</Text>
+                  <Text style={s.motorValue}>
+                    {hasLiveMotor(isConnected, p.timestamp) ? fmtMotorRuntime(p.motorRuntime) : "—"}
+                  </Text>
                 </View>
               </View>
               <View style={s.motorSection}>
                 <View style={s.motorHeader}>
                   <Text style={s.motorLabel}>MOTOR LOAD</Text>
-                  <Text style={s.motorValue}>{showInt(isConnected, p.motorLoadPct, " %")}</Text>
+                  <Text style={s.motorValue}>
+                    {hasLiveMotor(isConnected, p.timestamp) ? `${fmtInt(p.motorLoadPct)} %` : "—"}
+                  </Text>
                 </View>
               </View>
               <View style={s.relayGrid}>

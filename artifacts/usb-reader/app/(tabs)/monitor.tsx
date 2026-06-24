@@ -152,7 +152,7 @@ export default function MonitorScreen() {
           <Text style={s.clearTxt}>CLEAR</Text>
         </Pressable>
         <View style={{ flex: 1 }} />
-        <UsbConnectionBar compact />
+        <UsbConnectionBar compact embedded />
       </View>
 
       <View style={s.body}>

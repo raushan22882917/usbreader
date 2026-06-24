@@ -291,6 +291,24 @@ export function coerceNumArray(values: unknown, mode: Parameters<typeof coerceBy
     .filter((n): n is number => n != null);
 }
 
+function parseMotorSdoResponse(
+  state: DiagnosisDecodeState,
+  dlc: number,
+  d: Uint8Array,
+): void {
+  if (dlc < 4) return;
+  const rsp = d[0];
+  if (rsp !== 0x4b && rsp !== 0x43 && rsp !== 0x4f) return;
+
+  if (d[1] === 0x21 && d[2] === 0x20 && d[3] === 0x06) {
+    if (dlc >= 6) state.rpm = u16le(d, 4);
+  } else if (d[1] === 0x23 && d[2] === 0x20 && d[3] === 0x1e) {
+    if (dlc >= 6) state.motorTempC = s16le(d, 4) / 10;
+  } else if (d[1] === 0x21 && d[2] === 0x20 && d[3] === 0x19) {
+    if (dlc >= 6) state.motorRuntime = u16le(d, 4);
+  }
+}
+
 /** Parse one CAN frame into diagnosis state (main.cpp parseDiagnosisCanFrame). */
 export function parseDiagnosisCanFrame(
   state: DiagnosisDecodeState,
@@ -300,6 +318,12 @@ export function parseDiagnosisCanFrame(
   data: Uint8Array,
 ): void {
   const d = data;
+  const stdId = id & 0x7ff;
+
+  if (stdId === 0x581) {
+    parseMotorSdoResponse(state, dlc, d);
+    return;
+  }
 
   if (isExt) {
     if (id === 0x18a10002) {
@@ -317,8 +341,10 @@ export function parseDiagnosisCanFrame(
       if (dlc >= 7 && d[6] > 0) state.totalCells = d[6];
       if (dlc >= 8) state.soc = d[7];
     } else if (id === 0x18a11b02 && dlc >= 4) {
-      state.packVoltageV = u16be(d, 0) / 100;
-      state.packCurrentA = s16be(d, 2) / 100;
+      state.packVoltageV = ((d[0] << 8) | d[1]) / 100;
+      const rawCurrent = (d[2] << 8) | d[3];
+      const signedCurrent = rawCurrent > 0x7fff ? rawCurrent - 0x10000 : rawCurrent;
+      state.packCurrentA = signedCurrent / 100;
     } else if (id === 0x18a11d02 && dlc >= 2) {
       state.packTempC = s16be(d, 0) / 10;
     } else if (id === 0x18a10f02 && dlc > 0) {
@@ -405,13 +431,5 @@ export function parseDiagnosisCanFrame(
       }
     }
     updateEvccInfo(state, id);
-  } else if (id === 0x581 && dlc >= 4) {
-    if (d[0] === 0x4b && d[1] === 0x21 && d[2] === 0x20 && d[3] === 0x06) {
-      if (dlc >= 6) state.rpm = u16le(d, 4);
-    } else if (d[0] === 0x4b && d[1] === 0x23 && d[2] === 0x20 && d[3] === 0x1e) {
-      if (dlc >= 6) state.motorTempC = s16le(d, 4) / 10;
-    } else if (d[0] === 0x4b && d[1] === 0x21 && d[2] === 0x20 && d[3] === 0x19) {
-      if (dlc >= 6) state.motorRuntime = u16le(d, 4);
-    }
   }
 }

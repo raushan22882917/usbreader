@@ -745,30 +745,33 @@ export default function DashboardScreen() {
         </View>
       )}
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={s.statusBarScroll}
-        contentContainerStyle={[s.statusBar, isCompact && s.statusBarCompact]}
-      >
-        {!isTight && (
-          <Text style={[s.sbTime, { fontSize: fontXs }]}>{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</Text>
-        )}
-        <MaterialCommunityIcons name="usb" size={iconSm} color={isConnected ? T.green : T.muted} />
-        <Text style={[s.sbTitle, isCompact && s.sbTitleCompact, { fontSize: fontSm }]} numberOfLines={1}>
-          {isTight ? "USB Logger" : (selectedDevice?.name ?? "USB Data Logger")}
-        </Text>
-        {selectedDevice && !isTight && (
-          <Text style={[s.sbVid, { fontSize: fontXs }]}>VID:{selectedDevice.vendorId?.toString(16).toUpperCase()}</Text>
-        )}
+      <View style={[s.statusBar, isCompact && s.statusBarCompact]}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={s.statusBarScroll}
+          contentContainerStyle={s.statusBarScrollContent}
+          nestedScrollEnabled
+          keyboardShouldPersistTaps="handled"
+        >
+          {!isTight && (
+            <Text style={[s.sbTime, { fontSize: fontXs }]}>{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</Text>
+          )}
+          <MaterialCommunityIcons name="usb" size={iconSm} color={isConnected ? T.green : T.muted} />
+          <Text style={[s.sbTitle, isCompact && s.sbTitleCompact, { fontSize: fontSm }]} numberOfLines={1}>
+            {isTight ? "USB Logger" : (selectedDevice?.name ?? "USB Data Logger")}
+          </Text>
+          {selectedDevice && !isTight && (
+            <Text style={[s.sbVid, { fontSize: fontXs }]}>VID:{selectedDevice.vendorId?.toString(16).toUpperCase()}</Text>
+          )}
 
-        <View style={[s.gpsBadge, { backgroundColor: gpsFix ? "rgba(110,220,161,0.12)" : "rgba(255,80,60,0.1)", borderColor: gpsFix ? "rgba(110,220,161,0.45)" : "rgba(255,80,60,0.4)" }]}>
-          <View style={[s.gpsDot, { backgroundColor: gpsFix ? T.green : T.red }]} />
-          <Text style={[s.gpsTxt, { color: gpsFix ? T.green : T.red, fontSize: fontXs }]}>{gpsFix ? "GPS OK" : "No Fix"}</Text>
-        </View>
-
-        <UsbConnectionBar compact />
-      </ScrollView>
+          <View style={[s.gpsBadge, { backgroundColor: gpsFix ? "rgba(110,220,161,0.12)" : "rgba(255,80,60,0.1)", borderColor: gpsFix ? "rgba(110,220,161,0.45)" : "rgba(255,80,60,0.4)" }]}>
+            <View style={[s.gpsDot, { backgroundColor: gpsFix ? T.green : T.red }]} />
+            <Text style={[s.gpsTxt, { color: gpsFix ? T.green : T.red, fontSize: fontXs }]}>{gpsFix ? "GPS OK" : "No Fix"}</Text>
+          </View>
+        </ScrollView>
+        <UsbConnectionBar compact embedded />
+      </View>
 
       {useStackedMain ? (
         <ScrollView
@@ -815,7 +818,8 @@ const s = StyleSheet.create({
     lineHeight: 15,
   },
 
-  statusBarScroll: { flexGrow: 0, flexShrink: 0 },
+  statusBarScroll: { flex: 1, flexGrow: 1, flexShrink: 1, minWidth: 0 },
+  statusBarScrollContent: { flexDirection: "row", alignItems: "center", gap: Spacing.sm, paddingRight: Spacing.sm },
   statusBar: { minHeight: 36, flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.gutter, gap: Spacing.sm, borderBottomWidth: Border.width, borderBottomColor: Border.color, backgroundColor: Colors.surfaceContainerLowest },
   statusBarCompact: { minHeight: 32, paddingHorizontal: 8, gap: 6 },
   sbTime:    { ...Typography.labelCaps, color: T.muted, fontSize: 10 },

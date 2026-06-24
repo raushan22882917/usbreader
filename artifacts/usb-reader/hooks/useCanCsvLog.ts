@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import USBSerialService from "@/USBSerialService";
+import { ingestJsonLines } from "@/lib/diagnosisTelemetry";
 import {
   CanLogRow,
   CsvLogSessionInfo,
   DEFAULT_RECORD_SIZE,
-  CSV_HEADERS,
   buildCsvFromLines,
-  extractJsonObjects,
   isCsvLogAck,
   isCsvLogLine,
   parseCanLogBytes,
@@ -15,15 +14,13 @@ import {
   base64ToBytes,
 } from "@/lib/canCsvLog";
 
-const RX_STREAM_MAX = 262144;
 const LIVE_ROWS_MAX = 120;
-const CSV_PREVIEW_LINES = 80;
-/** ~25 min @ 163 fps; oldest rows dropped when full */
-const MAX_CSV_LINES = 250_000;
-const UI_FLUSH_MS = 300;
+const CSV_PREVIEW_LINES = 40;
+const UI_FLUSH_MS = 500;
 
-export const CAPTURE_DURATION_SEC = 30;
-export type CapturePhase = "idle" | "running" | "stopped" | "saving";
+export type CapturePhase = "idle" | "running" | "saving";
+
+type SendCommand = (obj: Record<string, unknown>) => Promise<void>;
 
 function hexToString(hex: string): string {
   let out = "";
@@ -33,13 +30,17 @@ function hexToString(hex: string): string {
   return out;
 }
 
-function trimCsvBuffer(lines: string[], max: number): void {
-  if (lines.length <= max) return;
-  const drop = lines.length - max;
-  lines.splice(0, drop);
+function appendLiveRows(buf: CanLogRow[], rows: CanLogRow[]): void {
+  for (let i = 0; i < rows.length; i++) buf.push(rows[i]);
+  if (buf.length > LIVE_ROWS_MAX) {
+    buf.splice(0, buf.length - LIVE_ROWS_MAX);
+  }
 }
 
-export function useCanCsvLog(isConnected: boolean) {
+export function useCanCsvLog(
+  isConnected: boolean,
+  sendCommand?: SendCommand,
+) {
   const [liveRows, setLiveRows] = useState<CanLogRow[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [recordedCount, setRecordedCount] = useState(0);
@@ -47,17 +48,23 @@ export function useCanCsvLog(isConnected: boolean) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [sessionStart, setSessionStart] = useState<Date | null>(null);
   const [sessionInfo, setSessionInfo] = useState<CsvLogSessionInfo | null>(null);
-  const [bufferTrimmed, setBufferTrimmed] = useState(0);
   const [capturePhase, setCapturePhase] = useState<CapturePhase>("idle");
-  const [secondsLeft, setSecondsLeft] = useState(CAPTURE_DURATION_SEC);
   const [csvPreviewLines, setCsvPreviewLines] = useState<string[]>([]);
 
   const csvLinesRef = useRef<string[]>([]);
-  const captureEndsAtRef = useRef<number | null>(null);
+  const previewLinesRef = useRef<string[]>([]);
   const livePendingRef = useRef<CanLogRow[]>([]);
-  const isRecordingRef = useRef(true);
-  const rxStreamRef = useRef("");
+  const isRecordingRef = useRef(false);
+  const lineBufRef = useRef("");
+  
+  // Timestamps:
+  // sessionStartRef points to the time the serial connection was established.
   const sessionStartRef = useRef<Date | null>(null);
+  // recordingStartWallClockRef points to the wall clock time when the user clicked "Start Recording".
+  const recordingStartWallClockRef = useRef<Date | null>(null);
+  // recordingStartDeviceTimeRef points to the device-side timeMs of the first frame received during the recording.
+  const recordingStartDeviceTimeRef = useRef<number | null>(null);
+
   const recordSizeRef = useRef(DEFAULT_RECORD_SIZE);
   const nextIndexRef = useRef(0);
   const fpsCountRef = useRef(0);
@@ -66,57 +73,56 @@ export function useCanCsvLog(isConnected: boolean) {
 
   const reset = useCallback(() => {
     csvLinesRef.current = [];
+    previewLinesRef.current = [];
     livePendingRef.current = [];
+    lineBufRef.current = "";
     setLiveRows([]);
     setTotalCount(0);
     setRecordedCount(0);
     setFramesPerSec(0);
-    setBufferTrimmed(0);
     setCapturePhase("idle");
-    setSecondsLeft(CAPTURE_DURATION_SEC);
     setCsvPreviewLines([]);
-    captureEndsAtRef.current = null;
     setIsStreaming(false);
     setSessionStart(null);
     setSessionInfo(null);
     sessionStartRef.current = null;
+    recordingStartWallClockRef.current = null;
+    recordingStartDeviceTimeRef.current = null;
     recordSizeRef.current = DEFAULT_RECORD_SIZE;
     nextIndexRef.current = 0;
     fpsCountRef.current = 0;
     fpsWindowStartRef.current = Date.now();
-    rxStreamRef.current = "";
     uiDirtyRef.current = false;
-  }, []);
-
-  const setRecording = useCallback((on: boolean) => {
-    isRecordingRef.current = on;
-    if (!on) {
-      setCapturePhase((p) => (p === "running" ? "stopped" : p));
-    }
-  }, []);
-
-  const startCaptureWindow = useCallback(() => {
-    isRecordingRef.current = true;
-    captureEndsAtRef.current = Date.now() + CAPTURE_DURATION_SEC * 1000;
-    setCapturePhase("running");
-    setSecondsLeft(CAPTURE_DURATION_SEC);
-  }, []);
-
-  const stopCapture = useCallback(() => {
     isRecordingRef.current = false;
-    captureEndsAtRef.current = null;
-    setCapturePhase((p) => (p === "saving" ? "saving" : "stopped"));
   }, []);
 
-  const markSaving = useCallback(() => {
-    setCapturePhase("saving");
+  const startRecording = useCallback(() => {
+    csvLinesRef.current = [];
+    previewLinesRef.current = [];
+    setCsvPreviewLines([]);
+    setRecordedCount(0);
+    recordingStartWallClockRef.current = new Date();
+    recordingStartDeviceTimeRef.current = null;
+    isRecordingRef.current = true;
+    setCapturePhase("running");
   }, []);
 
-  const getCsvForExport = useCallback((): string => {
+  const stopRecording = useCallback(() => {
+    isRecordingRef.current = false;
+    setCapturePhase("idle");
+  }, []);
+
+  const markSaving = useCallback((on: boolean) => {
+    setCapturePhase(on ? "saving" : "running");
+  }, []);
+
+  const getCurrentCsv = useCallback(() => {
     return buildCsvFromLines(csvLinesRef.current);
   }, []);
 
-  const getExportLineCount = useCallback(() => csvLinesRef.current.length, []);
+  const getRecordedCount = useCallback(() => {
+    return csvLinesRef.current.length;
+  }, []);
 
   const flushUi = useCallback(() => {
     if (!uiDirtyRef.current) return;
@@ -126,12 +132,8 @@ export function useCanCsvLog(isConnected: boolean) {
       setLiveRows([...livePendingRef.current]);
     }
     setTotalCount(nextIndexRef.current);
-    const bufLen = csvLinesRef.current.length;
-    setRecordedCount(bufLen);
-
-    const tail = csvLinesRef.current;
-    const previewStart = Math.max(0, tail.length - CSV_PREVIEW_LINES);
-    setCsvPreviewLines(tail.slice(previewStart));
+    setRecordedCount(csvLinesRef.current.length);
+    setCsvPreviewLines([...previewLinesRef.current]);
 
     const elapsed = Date.now() - fpsWindowStartRef.current;
     if (elapsed >= 500) {
@@ -142,24 +144,6 @@ export function useCanCsvLog(isConnected: boolean) {
     }
   }, []);
 
-  useEffect(() => {
-    if (!isConnected || capturePhase !== "running") return;
-
-    const tick = () => {
-      const end = captureEndsAtRef.current;
-      if (!end) return;
-      const left = Math.ceil((end - Date.now()) / 1000);
-      setSecondsLeft(Math.max(0, left));
-      if (left <= 0) {
-        stopCapture();
-      }
-    };
-
-    tick();
-    const id = setInterval(tick, 250);
-    return () => clearInterval(id);
-  }, [isConnected, capturePhase, stopCapture]);
-
   const beginSession = useCallback((info: CsvLogSessionInfo) => {
     const now = new Date();
     sessionStartRef.current = now;
@@ -168,62 +152,74 @@ export function useCanCsvLog(isConnected: boolean) {
     fpsCountRef.current = 0;
     fpsWindowStartRef.current = Date.now();
     csvLinesRef.current = [];
+    previewLinesRef.current = [];
     livePendingRef.current = [];
+    lineBufRef.current = "";
     setCsvPreviewLines([]);
     setSessionStart(now);
     setSessionInfo(info);
     setIsStreaming(true);
-    startCaptureWindow();
-  }, [startCaptureWindow]);
+    // Note: We do NOT start recording automatically on session ack.
+    // The user will click "Start Recording" explicitly.
+    setCapturePhase("idle");
+    isRecordingRef.current = false;
+  }, []);
 
-  const ingestLogB64 = useCallback(
-    (b64: string) => {
-      if (!sessionStartRef.current) {
-        beginSession({
-          recordSize: recordSizeRef.current,
-          mode: "csvlog",
-          fmt: "b64bin",
-        });
+  const ingestLogB64 = useCallback((b64: string) => {
+    if (!sessionStartRef.current) return;
+
+    const bytes = base64ToBytes(b64);
+    const { rows, nextIndex } = parseCanLogBytes(
+      bytes,
+      recordSizeRef.current,
+      nextIndexRef.current,
+    );
+    if (!rows.length) return;
+
+    nextIndexRef.current = nextIndex;
+    fpsCountRef.current += rows.length;
+
+    // Check if recording is currently active
+    if (isRecordingRef.current) {
+      // Initialize the device-side starting timestamp for the recording if not already set
+      if (recordingStartDeviceTimeRef.current === null && rows.length > 0) {
+        recordingStartDeviceTimeRef.current = rows[0].timeMs;
       }
 
-      const bytes = base64ToBytes(b64);
-      const { rows, nextIndex } = parseCanLogBytes(
-        bytes,
-        recordSizeRef.current,
-        nextIndexRef.current,
-      );
-      if (!rows.length) return;
+      const startDeviceTime = recordingStartDeviceTimeRef.current ?? 0;
+      const startWallClock = recordingStartWallClockRef.current ?? new Date();
+      const buf = csvLinesRef.current;
 
-      nextIndexRef.current = nextIndex;
-      fpsCountRef.current += rows.length;
+      for (let i = 0; i < rows.length; i++) {
+        // Compute elapsed milliseconds relative to the start of this recording
+        const elapsedMs = Math.max(0, rows[i].timeMs - startDeviceTime);
+        
+        // Clone and adjust the row to have the relative time offset
+        const adjustedRow = {
+          ...rows[i],
+          timeMs: elapsedMs,
+        };
 
-      const start = sessionStartRef.current!;
-      if (isRecordingRef.current) {
-        const buf = csvLinesRef.current;
-        for (let i = 0; i < rows.length; i++) {
-          buf.push(rowToCsvLine(rows[i], start));
-        }
-        if (buf.length > MAX_CSV_LINES) {
-          const drop = buf.length - MAX_CSV_LINES;
-          buf.splice(0, drop);
-          setBufferTrimmed((t) => t + drop);
+        const line = rowToCsvLine(adjustedRow, startWallClock);
+        buf.push(line);
+        previewLinesRef.current.push(line);
+        if (previewLinesRef.current.length > CSV_PREVIEW_LINES) {
+          previewLinesRef.current.splice(
+            0,
+            previewLinesRef.current.length - CSV_PREVIEW_LINES,
+          );
         }
       }
+    }
 
-      livePendingRef.current = [
-        ...livePendingRef.current,
-        ...rows,
-      ].slice(-LIVE_ROWS_MAX);
-
-      uiDirtyRef.current = true;
-    },
-    [beginSession],
-  );
+    appendLiveRows(livePendingRef.current, rows);
+    uiDirtyRef.current = true;
+  }, []);
 
   useEffect(() => {
     if (!isConnected) return;
-    const id = setInterval(flushUi, UI_FLUSH_MS);
-    return () => clearInterval(id);
+    const uiId = setInterval(flushUi, UI_FLUSH_MS);
+    return () => clearInterval(uiId);
   }, [isConnected, flushUi]);
 
   useEffect(() => {
@@ -236,13 +232,11 @@ export function useCanCsvLog(isConnected: boolean) {
       const chunk = hexToString(hexData);
       if (!chunk) return;
 
-      rxStreamRef.current += chunk;
-      if (rxStreamRef.current.length > RX_STREAM_MAX) {
-        rxStreamRef.current = rxStreamRef.current.slice(-RX_STREAM_MAX);
-      }
+      const { buffer, objects } = ingestJsonLines(lineBufRef.current, chunk);
+      lineBufRef.current = buffer;
+      if (!objects.length) return;
 
-      const objs = extractJsonObjects(rxStreamRef.current);
-      for (const obj of objs) {
+      for (const obj of objects) {
         if (isCsvLogAck(obj)) {
           beginSession(parseCsvLogAck(obj));
           continue;
@@ -256,35 +250,21 @@ export function useCanCsvLog(isConnected: boolean) {
     return unsub;
   }, [isConnected, reset, beginSession, ingestLogB64]);
 
-  const getCsvPreviewText = useCallback(() => {
-    const lines = csvLinesRef.current;
-    if (!lines.length) {
-      return CSV_HEADERS.join(",") + "\n(waiting for frames…)";
-    }
-    const tail = lines.slice(-CSV_PREVIEW_LINES);
-    return [CSV_HEADERS.join(","), ...tail].join("\n");
-  }, []);
-
   return {
     liveRows,
     totalCount,
     recordedCount,
     framesPerSec,
-    bufferTrimmed,
     isStreaming,
     sessionStart,
     sessionInfo,
     capturePhase,
-    secondsLeft,
     csvPreviewLines,
-    setRecording,
-    startCaptureWindow,
-    stopCapture,
     markSaving,
-    getCsvForExport,
-    getExportLineCount,
-    getCsvPreviewText,
+    getCurrentCsv,
+    getRecordedCount,
+    startRecording,
+    stopRecording,
     reset,
-    beginSession,
   };
 }

@@ -6,6 +6,7 @@
  * On other platforms: no-op stubs so the app still compiles.
  */
 import { NativeModules, NativeEventEmitter, Platform, EmitterSubscription } from 'react-native';
+import { logUsbError } from './lib/usbError';
 
 const { UsbSerialModule } = NativeModules;
 
@@ -86,34 +87,47 @@ class USBSerialService {
 
   // ── Native API wrappers ─────────────────────────────────────────────────────
 
+  private static async callNative<T>(context: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      logUsbError(`native ${context}`, error);
+      throw error;
+    }
+  }
+
   /** List all connected USB devices */
   static async listDevices(): Promise<UsbNativeDevice[]> {
-    if (!UsbSerialModule) return [];
-    return UsbSerialModule.listDevices();
+    if (!UsbSerialModule) {
+      throw new Error(
+        'UsbSerialModule not available. Rebuild the Android app (expo run:android) after native changes.',
+      );
+    }
+    return this.callNative('listDevices', () => UsbSerialModule.listDevices());
   }
 
   /** Request USB permission for a device */
   static async requestPermission(deviceId: number): Promise<UsbNativeDevice> {
     if (!UsbSerialModule) throw new Error('UsbSerialModule not available');
-    return UsbSerialModule.requestPermission(deviceId);
+    return this.callNative('requestPermission', () => UsbSerialModule.requestPermission(deviceId));
   }
 
   /** Open a connection to a USB device */
   static async connect(deviceId: number, baudRate = 9600): Promise<UsbNativeDevice> {
     if (!UsbSerialModule) throw new Error('UsbSerialModule not available');
-    return UsbSerialModule.connect(deviceId, baudRate);
+    return this.callNative('connect', () => UsbSerialModule.connect(deviceId, baudRate));
   }
 
   /** Write hex-encoded data to the connected device */
   static async write(hexData: string): Promise<number> {
     if (!UsbSerialModule) throw new Error('UsbSerialModule not available');
-    return UsbSerialModule.write(hexData);
+    return this.callNative('write', () => UsbSerialModule.write(hexData));
   }
 
   /** Disconnect from the current device */
   static async disconnect(): Promise<void> {
     if (!UsbSerialModule) return;
-    return UsbSerialModule.disconnect();
+    return this.callNative('disconnect', () => UsbSerialModule.disconnect());
   }
 
   // ── Test helpers (non-Android / dev) ───────────────────────────────────────

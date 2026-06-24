@@ -25,6 +25,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useUsb, UsbDevice, DataPacket } from "../../context/UsbContext";
+import { logUsbError } from "../../lib/usbError";
 import { BottomNav } from "../../components/BottomNav";
 import { Colors, Typography, Spacing, Border } from "../../theme";
 
@@ -109,6 +110,14 @@ export default function UsbTestScreen() {
 
   const listRef    = useRef<FlatList>(null);
   const seenIds    = useRef<Set<string>>(new Set());
+  const lastLoggedError = useRef<string | null>(null);
+
+  const addInfo = useCallback((msg: string, dir: "info" | "error" = "info") => {
+    setLog(prev => [...prev, {
+      id: Date.now().toString() + Math.random(),
+      time: ts(), dir, hex: "", ascii: msg, bytes: 0,
+    }].slice(-500));
+  }, []);
 
   // ── Sync selectedDevice from context ────────────────────────────────────────
   useEffect(() => {
@@ -121,6 +130,14 @@ export default function UsbTestScreen() {
       setLocalSelected(devices[0]);
     }
   }, [devices]);
+
+  // Log + mirror context errors into the on-screen log
+  useEffect(() => {
+    if (!lastError || lastError === lastLoggedError.current) return;
+    lastLoggedError.current = lastError;
+    console.error("[USB] usbtest lastError:", lastError);
+    addInfo(lastError, "error");
+  }, [lastError, addInfo]);
 
   // ── Mirror incoming packets into local log ───────────────────────────────────
   useEffect(() => {
@@ -151,13 +168,6 @@ export default function UsbTestScreen() {
   }, [log, autoScroll]);
 
   // ── Actions ──────────────────────────────────────────────────────────────────
-  const addInfo = useCallback((msg: string, dir: "info" | "error" = "info") => {
-    setLog(prev => [...prev, {
-      id: Date.now().toString() + Math.random(),
-      time: ts(), dir, hex: "", ascii: msg, bytes: 0,
-    }].slice(-500));
-  }, []);
-
   const handleScan = async () => {
     addInfo("Scanning for USB devices…");
     await scanForDevices();
@@ -174,13 +184,13 @@ export default function UsbTestScreen() {
 
     addInfo(`Connecting to ${target.name} @ ${baudRate} baud…`);
     try {
-      // Sync local baud rate selection into context before connecting
       const numBaud = parseInt(baudRate, 10);
+      const effectiveBaud = !isNaN(numBaud) ? numBaud : contextBaudRate;
       if (!isNaN(numBaud)) setContextBaudRate(numBaud as any);
-      await connectDevice(target);
+      await connectDevice(target, { baudRate: effectiveBaud as typeof contextBaudRate });
       addInfo(`✓ Connected to ${target.name}`);
     } catch (e: any) {
-      addInfo(`✗ ${e?.message ?? String(e)}`, "error");
+      addInfo(logUsbError('connect (usbtest)', e), "error");
     }
   };
 
@@ -272,7 +282,7 @@ export default function UsbTestScreen() {
                 <Text style={[styles.statusTxt, { color: isConnected ? C.green : C.red }]}>
                   {isConnected
                     ? (selectedDevice?.name ?? "Connected")
-                    : connectionStatus === "error" ? "Error"
+                    : connectionStatus === "error" ? (lastError?.split("\n")[0] ?? "Error")
                     : "Offline"}
                 </Text>
               </View>
@@ -282,7 +292,7 @@ export default function UsbTestScreen() {
             {lastError && (
               <View style={styles.errorBanner}>
                 <MaterialCommunityIcons name="alert-circle-outline" size={12} color={C.red} />
-                <Text style={styles.errorTxt} numberOfLines={2}>{lastError}</Text>
+                <Text style={styles.errorTxt} selectable>{lastError}</Text>
               </View>
             )}
           </View>

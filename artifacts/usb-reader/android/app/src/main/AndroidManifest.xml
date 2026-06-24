@@ -7,6 +7,7 @@
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+  <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
@@ -29,12 +30,10 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="autonxt"/>
       </intent-filter>
-      <intent-filter data-generated="true">
-        <action android:name="android.intent.action.android.hardware.usb.action.USB_DEVICE_ATTACHED"/>
+      <intent-filter>
+        <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"/>
       </intent-filter>
-      <intent-filter data-generated="true">
-        <action android:name="android.intent.action.android.hardware.usb.action.USB_DEVICE_DETACHED"/>
-      </intent-filter>
+      <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/device_filter"/>
     </activity>
   </application>
 </manifest>

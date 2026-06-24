@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -10,19 +10,18 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { usePathname } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useUsb } from "@/context/UsbContext";
 import { Header } from "@/components/Header";
 import { BottomNav } from "@/components/BottomNav";
 import { UsbConnectionBar } from "@/components/UsbConnectionBar";
-import {
-  CAPTURE_DURATION_SEC,
-  useCanCsvLog,
-} from "@/hooks/useCanCsvLog";
+import { useCanCsvLog } from "@/hooks/useCanCsvLog";
 import { useDeviceScale } from "@/hooks/useDeviceScale";
 import { CanLogRow, CSV_HEADERS, formatLogTime } from "@/lib/canCsvLog";
 import { openSavedPath, saveCsvToDevice, showSaveError } from "@/lib/saveCsvFile";
+import { sendCdcLine } from "@/lib/usbCdc";
 import { Colors, Spacing, Border } from "@/theme";
 
 const C = {
@@ -39,27 +38,6 @@ const C = {
   blue: Colors.secondary,
   term: Colors.terminal,
 };
-
-function strToHex(str: string): string {
-  let hex = "";
-  for (let i = 0; i < str.length; i++) {
-    hex += str.charCodeAt(i).toString(16).padStart(2, "0");
-  }
-  return hex;
-}
-
-async function sendCdcLine(
-  writeData: (hex: string) => Promise<void>,
-  obj: Record<string, unknown>,
-): Promise<void> {
-  const line = JSON.stringify(obj) + "\n";
-  const hex = strToHex(line);
-  const chunkHex = 512;
-  for (let i = 0; i < hex.length; i += chunkHex) {
-    await writeData(hex.slice(i, i + chunkHex));
-    if (i + chunkHex < hex.length) await new Promise((r) => setTimeout(r, 1));
-  }
-}
 
 function LogRow({
   row,
@@ -158,6 +136,30 @@ export default function CsvLogScreen() {
 
   const { connectionStatus, writeData } = useUsb();
   const isConnected = connectionStatus === "connected";
+  const isFocused = usePathname().includes("csv_log");
+
+  const [statusMsg, setStatusMsg] = useState(
+    "Connect USB — tap Download CSV to export current data",
+  );
+  const [saving, setSaving] = useState(false);
+
+  const autoRequestedRef = useRef(false);
+  const connectAtRef = useRef<number | null>(null);
+  const previewScrollRef = useRef<ScrollView>(null);
+
+  const sendCommand = useCallback(
+    async (obj: Record<string, unknown>) => {
+      if (connectionStatus !== "connected") return;
+      await sendCdcLine(writeData, obj);
+    },
+    [connectionStatus, writeData],
+  );
+
+  const sendCsvCmd = useCallback(async () => {
+    if (connectionStatus !== "connected") return;
+    setStatusMsg('→ {"cmd":"csv"}');
+    await sendCommand({ cmd: "csv" });
+  }, [connectionStatus, sendCommand]);
 
   const {
     liveRows,
@@ -167,114 +169,97 @@ export default function CsvLogScreen() {
     sessionStart,
     sessionInfo,
     framesPerSec,
-    bufferTrimmed,
     capturePhase,
-    secondsLeft,
     csvPreviewLines,
-    setRecording,
-    stopCapture,
     markSaving,
-    getCsvForExport,
-    getExportLineCount,
+    getCurrentCsv,
+    getRecordedCount,
+    startRecording,
+    stopRecording,
     reset,
-  } = useCanCsvLog(isConnected);
+  } = useCanCsvLog(isConnected, sendCommand);
 
-  const [statusMsg, setStatusMsg] = useState(
-    `Connect USB — auto ${CAPTURE_DURATION_SEC}s capture + save`,
-  );
-  const [saving, setSaving] = useState(false);
+  const downloadCsv = useCallback(async () => {
+    const rowCount = getRecordedCount();
+    if (rowCount === 0) {
+      Alert.alert("Nothing to Save", "No CAN frames captured yet.");
+      return;
+    }
 
-  const autoRequestedRef = useRef(false);
-  const autoSavedRef = useRef(false);
-  const connectAtRef = useRef<number | null>(null);
-  const previewScrollRef = useRef<ScrollView>(null);
+    setSaving(true);
+    markSaving(true);
+    stopRecording(); // Stop recording when generating the final CSV
+    setStatusMsg(`Preparing CSV (${rowCount.toLocaleString()} rows)…`);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-  const sendCsvCmd = useCallback(async () => {
-    if (connectionStatus !== "connected") return;
-    setStatusMsg('→ {"cmd":"csv"}');
-    await sendCdcLine(writeData, { cmd: "csv" });
-  }, [connectionStatus, writeData]);
+    await new Promise((r) => setTimeout(r, 50));
 
-  const saveAndDownload = useCallback(
-    async (automatic = false) => {
-      const lineCount = getExportLineCount();
-      if (lineCount === 0) {
-        if (!automatic) {
-          Alert.alert("Nothing to Save", "No CAN frames captured in this session.");
-        }
-        return;
+    try {
+      const stamp = new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-")
+        .slice(0, 19);
+      const filename = `can_log_${stamp}.csv`;
+      const csv = getCurrentCsv();
+
+      const result = await saveCsvToDevice(csv, filename);
+
+      if (result.ok) {
+        Alert.alert(
+          "CSV Ready",
+          `${result.message}\n\n${rowCount.toLocaleString()} rows exported.`,
+          result.path
+            ? [{ text: "OK" }, { text: "Open", onPress: () => openSavedPath(result.path!) }]
+            : [{ text: "OK" }],
+        );
+        setStatusMsg(`✓ ${result.message}`);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else if (result.message !== "Share cancelled") {
+        showSaveError(result.message);
       }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showSaveError(msg);
+    } finally {
+      setSaving(false);
+      markSaving(false);
+    }
+  }, [getRecordedCount, getCurrentCsv, markSaving, stopRecording]);
 
-      setSaving(true);
-      markSaving();
-      setStatusMsg(`Building CSV (${lineCount.toLocaleString()} rows)…`);
-      if (!automatic) {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      }
+  const recordingStatus = useMemo(() => {
+    if (!sessionInfo || !isStreaming) return null;
+    const fps = framesPerSec > 0 ? ` · ~${framesPerSec}/s` : "";
+    if (capturePhase === "running") {
+      return `Recording · ${recordedCount.toLocaleString()} rows${fps}`;
+    }
+    if (capturePhase === "saving") {
+      return "Preparing CSV…";
+    }
+    return null;
+  }, [sessionInfo, isStreaming, capturePhase, recordedCount, framesPerSec]);
 
-      await new Promise((r) => setTimeout(r, 50));
-
-      try {
-        const csv = getCsvForExport();
-        const stamp = new Date()
-          .toISOString()
-          .replace(/[:.]/g, "-")
-          .slice(0, 19);
-        const filename = `can_log_${stamp}.csv`;
-
-        const result = await saveCsvToDevice(csv, filename);
-
-        if (result.ok) {
-          const title = automatic ? "Auto-saved CSV" : "CSV Saved";
-          Alert.alert(
-            title,
-            `${result.message}\n\n${lineCount.toLocaleString()} rows (${CAPTURE_DURATION_SEC}s capture).`,
-            result.path
-              ? [{ text: "OK" }, { text: "Open", onPress: () => openSavedPath(result.path!) }]
-              : [{ text: "OK" }],
-          );
-          setStatusMsg(`✓ ${result.message} (${lineCount.toLocaleString()} rows)`);
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        } else if (!automatic && result.message !== "Share cancelled") {
-          showSaveError(result.message);
-        } else if (automatic) {
-          showSaveError(result.message);
-        }
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (!automatic) showSaveError(msg);
-        else setStatusMsg(`Auto-save failed: ${msg}`);
-      } finally {
-        setSaving(false);
-      }
-    },
-    [getExportLineCount, getCsvForExport, markSaving],
-  );
+  const displayStatus = recordingStatus ?? statusMsg;
 
   useEffect(() => {
     if (!isConnected) {
       connectAtRef.current = null;
       autoRequestedRef.current = false;
-      autoSavedRef.current = false;
       setStatusMsg("Disconnected");
       return;
     }
     connectAtRef.current = Date.now();
     autoRequestedRef.current = false;
-    autoSavedRef.current = false;
     reset();
-    setStatusMsg(
-      `Waiting for stream… ${CAPTURE_DURATION_SEC}s auto-capture will start on csvlog ack`,
-    );
+    setStatusMsg("Waiting for stream… csvlog will start on connect ack");
   }, [isConnected, reset]);
 
   useEffect(() => {
-    if (!isConnected || autoRequestedRef.current) return;
+    if (!isConnected || !isFocused || autoRequestedRef.current) return;
     const t0 = connectAtRef.current ?? Date.now();
     const waitMs = 800;
     const remaining = waitMs - (Date.now() - t0);
     const id = setTimeout(() => {
-      if (!isConnected || autoRequestedRef.current) return;
+      if (!isConnected || !isFocused || autoRequestedRef.current) return;
       autoRequestedRef.current = true;
       sendCsvCmd().catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
@@ -282,88 +267,64 @@ export default function CsvLogScreen() {
       });
     }, Math.max(0, remaining));
     return () => clearTimeout(id);
-  }, [isConnected, sendCsvCmd]);
+  }, [isConnected, isFocused, sendCsvCmd]);
 
-  // After 30s window ends → stop buffering and auto-save
+  const lastPreviewScrollRef = useRef(0);
   useEffect(() => {
-    if (capturePhase !== "stopped" || saving || autoSavedRef.current) return;
-    autoSavedRef.current = true;
-    setRecording(false);
-    setStatusMsg(`${CAPTURE_DURATION_SEC}s complete — saving CSV…`);
-    void saveAndDownload(true);
-  }, [capturePhase, saving, saveAndDownload, setRecording]);
-
-  useEffect(() => {
-    if (sessionInfo && isStreaming) {
-      const fps = framesPerSec > 0 ? ` · ~${framesPerSec}/s` : "";
-      const trim = bufferTrimmed > 0 ? ` · dropped ${bufferTrimmed}` : "";
-      if (capturePhase === "running") {
-        setStatusMsg(
-          `Recording ${secondsLeft}s left · ${recordedCount.toLocaleString()} rows buffered${fps}${trim}`,
-        );
-      } else if (capturePhase === "saving") {
-        setStatusMsg("Saving CSV to Downloads…");
-      } else if (capturePhase === "stopped") {
-        setStatusMsg(`Stopped · ${recordedCount.toLocaleString()} rows${fps}`);
-      }
-    }
-  }, [
-    isStreaming,
-    sessionInfo,
-    recordedCount,
-    framesPerSec,
-    bufferTrimmed,
-    capturePhase,
-    secondsLeft,
-  ]);
-
-  // Scroll CSV preview to bottom as new lines arrive
-  useEffect(() => {
-    if (csvPreviewLines.length > 0) {
-      previewScrollRef.current?.scrollToEnd({ animated: false });
-    }
+    if (csvPreviewLines.length === 0) return;
+    const now = Date.now();
+    if (now - lastPreviewScrollRef.current < 800) return;
+    lastPreviewScrollRef.current = now;
+    previewScrollRef.current?.scrollToEnd({ animated: false });
   }, [csvPreviewLines.length]);
 
-  const countdownLabel =
+  const renderLogRow = useCallback(
+    ({ item }: { item: CanLogRow }) => (
+      <LogRow row={item} sessionStart={sessionStart} />
+    ),
+    [sessionStart],
+  );
+
+  const keyExtractor = useCallback(
+    (item: CanLogRow, i: number) => `log-${item.index}-${i}`,
+    [],
+  );
+
+  const statusLabel =
     capturePhase === "running"
-      ? `0:${String(secondsLeft).padStart(2, "0")}`
+      ? "REC"
       : capturePhase === "saving"
         ? "SAVE"
-        : capturePhase === "stopped"
-          ? "DONE"
-          : "—";
+        : "—";
 
   const connectActions = (
     <View style={ca.row}>
-      <Pressable
-        style={[ca.btn, ca.btnPrimary]}
-        onPress={() => saveAndDownload(false)}
-        disabled={saving || recordedCount === 0}
-      >
-        {saving ? (
-          <ActivityIndicator size="small" color={C.bg} />
-        ) : (
-          <MaterialCommunityIcons name="download" size={iconSm} color={C.bg} />
-        )}
-        <Text style={[ca.btnTxt, ca.btnPrimaryTxt]}>Save Now</Text>
-      </Pressable>
+      {capturePhase === "running" ? (
+        <Pressable
+          style={[ca.btn, ca.btnPrimary, { backgroundColor: C.red, borderColor: C.red }]}
+          onPress={() => void downloadCsv()}
+          disabled={saving || recordedCount === 0}
+        >
+          {saving ? (
+            <ActivityIndicator size="small" color={C.bg} />
+          ) : (
+            <MaterialCommunityIcons name="stop" size={iconSm} color={C.bg} />
+          )}
+          <Text style={[ca.btnTxt, ca.btnPrimaryTxt]}>Download CSV</Text>
+        </Pressable>
+      ) : (
+        <Pressable
+          style={[ca.btn, ca.btnPrimary, { backgroundColor: C.green, borderColor: C.green }]}
+          onPress={() => startRecording()}
+          disabled={!isConnected || saving}
+        >
+          <MaterialCommunityIcons name="play" size={iconSm} color={C.bg} />
+          <Text style={[ca.btnTxt, ca.btnPrimaryTxt]}>Start Record</Text>
+        </Pressable>
+      )}
       <Pressable
         style={ca.btn}
         onPress={() => {
-          stopCapture();
-          setRecording(false);
-          void saveAndDownload(false);
-        }}
-        disabled={saving || capturePhase !== "running"}
-      >
-        <MaterialCommunityIcons name="stop-circle-outline" size={iconSm} color={C.red} />
-        <Text style={ca.btnTxt}>Stop & Save</Text>
-      </Pressable>
-      <Pressable
-        style={ca.btn}
-        onPress={() => {
-          autoSavedRef.current = false;
-          autoRequestedRef.current = true;
           reset();
           sendCsvCmd();
         }}
@@ -394,11 +355,15 @@ export default function CsvLogScreen() {
       </View>
       <FlatList
         style={s.list}
-        data={[...liveRows].reverse()}
-        keyExtractor={(item, i) => `log-${item.index}-${i}`}
-        renderItem={({ item }) => (
-          <LogRow row={item} sessionStart={sessionStart} />
-        )}
+        inverted
+        data={liveRows}
+        keyExtractor={keyExtractor}
+        renderItem={renderLogRow}
+        removeClippedSubviews
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        initialNumToRender={16}
+        updateCellsBatchingPeriod={100}
         ListEmptyComponent={
           <Text style={s.emptyTxt}>
             {isConnected ? "Waiting for CAN frames…" : "Connect USB"}
@@ -411,7 +376,7 @@ export default function CsvLogScreen() {
   const csvPanel = (
     <View style={s.panel}>
       <PanelHead
-        title="CSV preview (saved buffer)"
+        title="CSV preview"
         icon="file-delimited"
         color={C.blue}
         sub={`${recordedCount.toLocaleString()} rows`}
@@ -431,7 +396,7 @@ export default function CsvLogScreen() {
         ))}
         {csvPreviewLines.length === 0 && (
           <Text style={s.previewHint}>
-            Rows appear here as they are buffered for export…
+            Rows appear here as they are captured…
           </Text>
         )}
       </ScrollView>
@@ -452,11 +417,9 @@ export default function CsvLogScreen() {
           style={[
             s.countdownPill,
             capturePhase === "running" && { borderColor: `${C.red}88` },
-            capturePhase === "stopped" && { borderColor: `${C.green}88` },
           ]}
         >
-          <Text style={s.countdownTxt}>{countdownLabel}</Text>
-          <Text style={s.countdownSub}>/{CAPTURE_DURATION_SEC}s</Text>
+          <Text style={s.countdownTxt}>{statusLabel}</Text>
         </View>
         <View style={[s.pill, { borderColor: isConnected ? `${C.green}55` : `${C.red}55` }]}>
           <View style={[s.dot, { backgroundColor: isConnected ? C.green : C.red }]} />
@@ -474,10 +437,10 @@ export default function CsvLogScreen() {
 
       <View style={[s.statsRow, isCompact && s.statsRowCompact]}>
         <Text style={s.stat}>Rx: {totalCount.toLocaleString()}</Text>
-        <Text style={s.stat}>CSV: {recordedCount.toLocaleString()}</Text>
+        <Text style={s.stat}>Rows: {recordedCount.toLocaleString()}</Text>
         {framesPerSec > 0 && <Text style={s.statFps}>~{framesPerSec}/s</Text>}
         <Text style={s.statMsg} numberOfLines={2}>
-          {statusMsg}
+          {displayStatus}
         </Text>
       </View>
 
@@ -546,7 +509,6 @@ const s = StyleSheet.create({
     flexShrink: 0,
   },
   countdownTxt: { color: C.yellow, fontSize: 14, fontWeight: "800", fontVariant: ["tabular-nums"] },
-  countdownSub: { color: C.muted, fontSize: 9, marginLeft: 2 },
   pill: {
     flexDirection: "row",
     alignItems: "center",

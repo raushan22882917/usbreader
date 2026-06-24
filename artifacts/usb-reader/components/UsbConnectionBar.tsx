@@ -4,9 +4,10 @@
  * Full mode: device chips + scan + connect/disconnect.
  * Compact mode: single-line pill row for tight headers.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Platform,
   Pressable,
   ScrollView,
@@ -27,6 +28,8 @@ interface UsbConnectionBarProps {
   nodeId?: string;
   onNodeIdChange?: (v: string) => void;
   compact?: boolean;
+  /** Strip bar chrome when nested inside another header row (e.g. dashboard status bar). */
+  embedded?: boolean;
   trailing?: React.ReactNode;
 }
 
@@ -35,16 +38,16 @@ export function UsbConnectionBar({
   nodeId = '1',
   onNodeIdChange,
   compact = false,
+  embedded = false,
   trailing,
 }: UsbConnectionBarProps) {
   const {
     devices, selectedDevice, connectionStatus,
-    isScanning, isConnecting,
+    isScanning, isConnecting, lastError,
     scanForDevices, connectDevice, quickConnect, disconnectDevice,
   } = useUsb();
 
   const isConnected = connectionStatus === 'connected';
-  const isWorking   = isScanning || isConnecting;
   const { icon } = useDeviceScale();
   const iconSm = icon(13, 10);
   const iconXs = icon(12, 9);
@@ -62,120 +65,108 @@ export function UsbConnectionBar({
     if (devices.length > 0 && !localDeviceId) setLocalDeviceId(devices[0].id);
   }, [devices]);
 
+  const wasConnecting = useRef(false);
+  useEffect(() => {
+    if (wasConnecting.current && !isConnecting && lastError) {
+      console.error('[USB] UsbConnectionBar:', lastError);
+      Alert.alert('USB Connection Failed', lastError);
+    }
+    wasConnecting.current = isConnecting;
+  }, [isConnecting, lastError]);
+
+  const showError = !!lastError && !isConnected;
+  const errorLabel = lastError?.split('\n')[0] ?? 'Error';
+
   const handleScan = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     scanForDevices();
   };
 
-  const handleConnect = () => {
+  const handleConnect = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     if (isConnected) { disconnectDevice(); return; }
     const target = devices.find((d) => d.id === localDeviceId);
-    if (target) connectDevice(target);
-    else quickConnect();
+    if (target) await connectDevice(target);
+    else await quickConnect();
   };
 
   // ── Compact ──────────────────────────────────────────────────
   if (compact) {
-    const row = (
-      <View style={s.compactRow}>
-        <StatusChip
-          label={isConnected ? (selectedDevice?.name ?? 'Connected') : connectionStatus === 'error' ? 'Error' : 'Offline'}
-          color={isConnected ? Colors.tertiary : Colors.primary}
-          pulse={isConnected}
-        />
-
-        <Pressable style={[s.iconBtn, { width: iconBtnSize, height: iconBtnSize }]} onPress={handleScan} disabled={isWorking}>
-          {isScanning
-            ? <ActivityIndicator size="small" color={Colors.secondary} />
-            : <MaterialCommunityIcons name="magnify" size={iconSm} color={Colors.secondary} />}
-        </Pressable>
-
-        {trailing ? <View style={s.compactSpacer} /> : null}
-
-        <Pressable
-          style={[
-            s.connectBtn,
-            {
-              backgroundColor: isConnected ? `${Colors.primary}18` : `${Colors.tertiary}18`,
-              borderColor:     isConnected ? `${Colors.primary}55` : `${Colors.tertiary}55`,
-            },
-          ]}
-          onPress={handleConnect}
-          disabled={isWorking}
-        >
-          {isConnecting
-            ? <ActivityIndicator size="small" color={isConnected ? Colors.primary : Colors.tertiary} />
-            : <MaterialCommunityIcons
-                name={isConnected ? 'link-off' : 'link'}
-                size={iconSm}
-                color={isConnected ? Colors.primary : Colors.tertiary}
-              />}
-          <Text style={[s.connectTxt, { color: isConnected ? Colors.primary : Colors.tertiary }]}>
-            {isConnected ? 'Disconnect' : 'Connect'}
-          </Text>
-        </Pressable>
-
-        {trailing}
-      </View>
+    const statusChip = (
+      <StatusChip
+        label={isConnected ? (selectedDevice?.name ?? 'Connected') : connectionStatus === 'error' ? errorLabel : 'Offline'}
+        color={isConnected ? Colors.tertiary : Colors.primary}
+        pulse={isConnected}
+      />
     );
 
-    if (trailing) {
-      return (
-        <View style={s.compactBar}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={s.compactRow}
-          >
-            <StatusChip
-              label={isConnected ? (selectedDevice?.name ?? 'Connected') : connectionStatus === 'error' ? 'Error' : 'Offline'}
-              color={isConnected ? Colors.tertiary : Colors.primary}
-              pulse={isConnected}
-            />
+    const scanBtn = (
+      <Pressable
+        style={[s.iconBtn, { width: iconBtnSize, height: iconBtnSize }]}
+        onPress={handleScan}
+        disabled={isScanning}
+        hitSlop={8}
+      >
+        {isScanning
+          ? <ActivityIndicator size="small" color={Colors.secondary} />
+          : <MaterialCommunityIcons name="magnify" size={iconSm} color={Colors.secondary} />}
+      </Pressable>
+    );
 
-            <Pressable style={[s.iconBtn, { width: iconBtnSize, height: iconBtnSize }]} onPress={handleScan} disabled={isWorking}>
-              {isScanning
-                ? <ActivityIndicator size="small" color={Colors.secondary} />
-                : <MaterialCommunityIcons name="magnify" size={iconSm} color={Colors.secondary} />}
-            </Pressable>
+    const connectBtn = (
+      <Pressable
+        style={[
+          s.connectBtn,
+          {
+            backgroundColor: isConnected ? `${Colors.primary}18` : `${Colors.tertiary}18`,
+            borderColor:     isConnected ? `${Colors.primary}55` : `${Colors.tertiary}55`,
+          },
+        ]}
+        onPress={handleConnect}
+        disabled={isScanning}
+        hitSlop={8}
+      >
+        {isConnecting
+          ? <ActivityIndicator size="small" color={isConnected ? Colors.primary : Colors.tertiary} />
+          : <MaterialCommunityIcons
+              name={isConnected ? 'link-off' : 'link'}
+              size={iconSm}
+              color={isConnected ? Colors.primary : Colors.tertiary}
+            />}
+        <Text style={[s.connectTxt, { color: isConnected ? Colors.primary : Colors.tertiary }]}>
+          {isConnected ? 'Disconnect' : 'Connect'}
+        </Text>
+      </Pressable>
+    );
 
-            <Pressable
-              style={[
-                s.connectBtn,
-                {
-                  backgroundColor: isConnected ? `${Colors.primary}18` : `${Colors.tertiary}18`,
-                  borderColor:     isConnected ? `${Colors.primary}55` : `${Colors.tertiary}55`,
-                },
-              ]}
-              onPress={handleConnect}
-              disabled={isWorking}
-            >
-              {isConnecting
-                ? <ActivityIndicator size="small" color={isConnected ? Colors.primary : Colors.tertiary} />
-                : <MaterialCommunityIcons
-                    name={isConnected ? 'link-off' : 'link'}
-                    size={iconSm}
-                    color={isConnected ? Colors.primary : Colors.tertiary}
-                  />}
-              <Text style={[s.connectTxt, { color: isConnected ? Colors.primary : Colors.tertiary }]}>
-                {isConnected ? 'Disconnect' : 'Connect'}
-              </Text>
-            </Pressable>
-
-            <View style={s.trailingDivider} />
-            {trailing}
-          </ScrollView>
+    return (
+      <View>
+        <View style={[s.compactBar, embedded && s.compactBarEmbedded]}>
+          <View style={s.compactCore} collapsable={false}>
+            {statusChip}{scanBtn}{connectBtn}
+          </View>
+          {trailing ? (
+            <>
+              <View style={s.trailingDivider} />
+              <ScrollView horizontal style={s.trailingScroll} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                {trailing}
+              </ScrollView>
+            </>
+          ) : null}
         </View>
-      );
-    }
-    return row;
+        {showError ? (
+          <View style={s.errorRow}>
+            <MaterialCommunityIcons name="alert-circle-outline" size={iconXs} color={Colors.error} />
+            <Text style={s.errorTxt} selectable>{lastError}</Text>
+          </View>
+        ) : null}
+      </View>
+    );
   }
 
   // ── Full ─────────────────────────────────────────────────────
   return (
     <View style={s.bar}>
-      {/* Row 1: device chips + scan */}
       <View style={s.row}>
         <MaterialCommunityIcons name="usb" size={iconSm} color={Colors.onSurfaceVariant} />
         <Text style={s.lbl}>USB</Text>
@@ -207,7 +198,7 @@ export function UsbConnectionBar({
           </View>
         </ScrollView>
 
-        <Pressable style={s.scanBtn} onPress={handleScan} disabled={isWorking}>
+        <Pressable style={s.scanBtn} onPress={handleScan} disabled={isScanning} hitSlop={8}>
           {isScanning
             ? <ActivityIndicator size="small" color={Colors.onSurface} />
             : <MaterialCommunityIcons name="magnify" size={iconXs} color={Colors.onSurface} />}
@@ -221,7 +212,7 @@ export function UsbConnectionBar({
           label={
             isConnected
               ? (selectedDevice?.name ?? 'Connected')
-              : connectionStatus === 'error' ? 'Error'
+              : connectionStatus === 'error' ? errorLabel
               : connectionStatus === 'disconnected' ? 'Disconnected'
               : 'Offline'
           }
@@ -259,7 +250,8 @@ export function UsbConnectionBar({
             },
           ]}
           onPress={handleConnect}
-          disabled={isWorking}
+          disabled={isScanning}
+          hitSlop={8}
         >
           {isConnecting
             ? <ActivityIndicator size="small" color={isConnected ? Colors.primary : Colors.tertiary} />
@@ -273,6 +265,13 @@ export function UsbConnectionBar({
           </Text>
         </Pressable>
       </View>
+
+      {showError ? (
+        <View style={s.errorRow}>
+          <MaterialCommunityIcons name="alert-circle-outline" size={iconXs} color={Colors.error} />
+          <Text style={s.errorTxt} selectable>{lastError}</Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -393,27 +392,38 @@ const s = StyleSheet.create({
 
   // Compact
   compactBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: Colors.surfaceContainerLow,
     borderBottomWidth: Border.width,
     borderBottomColor: Border.color,
     paddingHorizontal: Spacing.panelPadding,
     paddingVertical: Spacing.xs,
+    minWidth: 0,
+    flexShrink: 0,
   },
-  compactRow: {
+  compactBarEmbedded: {
+    backgroundColor: 'transparent',
+    borderBottomWidth: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+  },
+  compactCore: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xs,
-    flexWrap: 'nowrap',
-  },
-  compactSpacer: {
-    flex: 1,
-    minWidth: 4,
+    flexShrink: 0,
   },
   trailingDivider: {
     width: 1,
-    height: 22,
+    alignSelf: 'stretch',
     backgroundColor: Border.color,
-    marginHorizontal: 2,
+    marginHorizontal: Spacing.xs,
+  },
+  trailingScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+    minWidth: 0,
   },
   iconBtn: {
     width: 26,
@@ -424,5 +434,24 @@ const s = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     // Sharp corners
+  },
+  errorRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.xs,
+    backgroundColor: `${Colors.error}12`,
+    borderWidth: Border.width,
+    borderColor: `${Colors.error}44`,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    marginTop: Spacing.xs,
+  },
+  errorTxt: {
+    ...Typography.bodyMd,
+    flex: 1,
+    color: Colors.error,
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    lineHeight: 14,
   },
 });
